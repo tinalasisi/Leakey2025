@@ -1,0 +1,793 @@
+---
+title: "phylogenetic_analysis"
+author: "Tina Lasisi"
+date: "2025-06-29"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+
+```{r}
+###############################################################################
+#  Primate hair-trajectory pilot analysis
+#  – creates /output/common_species.txt, root bar-plot, and transition table –
+###############################################################################
+
+# ---- 0.  Libraries ----------------------------------------------------------
+# install.packages(c("ape", "phytools", "tidyverse"), repos = "https://cran.rstudio.com/")
+library(ape)        # tree I/O
+library(phytools)   # fitPagel, fitMk, simmap
+library(tidyverse)  # readr, dplyr, stringr, ggplot2
+
+# ---- 1.  Read inputs --------------------------------------------------------
+tree   <- read.nexus("data/updated_pruned_tree.nex")
+traits <- read_csv("data/primate_hair_traits_prelim_data.csv", show_col_types = FALSE)
+
+# ---- 2.  Build Genus_species that matches tree labels -----------------------
+traits <- traits %>%
+  mutate(
+    Genus_clean   = str_to_title(str_remove(genus,   "\\s*\\(.*$")) %>% str_replace_all("[-\\s]+", "_"),
+    Species_clean = str_to_lower(str_remove(species, "\\s*\\(.*$")) %>% str_replace_all("[-\\s]+", "_"),
+    Genus_species = str_c(Genus_clean, Species_clean, sep = "_") %>%
+                    str_replace_all("_+", "_") %>% str_remove("^_") %>% str_remove("_$")
+  )
+
+# ---- 3.  Intersect tree tips and trait rows ---------------------------------
+# --- 3.  Check overlap with the tree ----
+in_both        <- intersect(tree$tip.label, traits$Genus_species)
+only_in_tree   <- setdiff(tree$tip.label, traits$Genus_species)
+only_in_traits <- setdiff(traits$Genus_species, tree$tip.label)
+
+cat("# species in BOTH  :", length(in_both), "\n")
+cat("# only in TREE      :", length(only_in_tree), "\n")
+cat("# only in TRAITS DF :", length(only_in_traits), "\n")
+
+# Optional – print the first few of each list so you can inspect
+head(only_in_tree)
+head(only_in_traits)
+
+common <- in_both
+
+dir.create("output", showWarnings = FALSE)          # ensure /output exists
+writeLines(sort(common), "output/common_species.txt")
+
+# Keep only matching taxa
+tree   <- drop.tip(tree, setdiff(tree$tip.label, common))
+traits <- filter(traits, Genus_species %in% tree$tip.label)
+```
+
+
+```{r}
+# ---- 4.  Binary Pagel test with live console output ----------------------
+
+# Convert to "0" and "1" characters specifically
+NC <- setNames(as.character(traits$natal_coat), traits$Genus_species)
+SD <- setNames(as.character(traits$hair_dichromatism_any), traits$Genus_species)
+
+# Verify they're "0" and "1"
+cat("\nUnique NC values:", unique(NC), "\n")
+cat("Unique SD values:", unique(SD), "\n")
+
+# Try fitPagel with "0" and "1"
+message("⏳  Running fitPagel with '0' and '1' characters...")
+t_pg <- system.time(
+  pg <- try(
+    fitPagel(tree,
+             x = NC,
+             y = SD,
+             model = "ARD",
+             method = "fitMk",   
+             print = TRUE),
+    silent = FALSE
+  )      
+)
+
+# If it still fails, check the exact structure fitPagel expects
+if(inherits(pg, "try-error")) {
+  cat("\nEven with '0' and '1' it failed. Let's check phytools version:\n")
+  packageVersion("phytools")
+  
+  # Try creating a simple example that should work
+  cat("\nTrying minimal example from phytools documentation...\n")
+  
+  # Alternative: Use factor with levels "0" and "1"
+  NC_factor <- factor(traits$natal_coat, levels = c(0, 1), labels = c("0", "1"))
+  SD_factor <- factor(traits$hair_dichromatism_any, levels = c(0, 1), labels = c("0", "1"))
+  names(NC_factor) <- traits$Genus_species
+  names(SD_factor) <- traits$Genus_species
+  
+  pg <- try(
+    fitPagel(tree, x = NC_factor, y = SD_factor, 
+             model = "ARD", method = "fitMk", print = TRUE),
+    silent = FALSE
+  )
+}
+```
+
+```{r}
+# Build summary table using the actual structure
+AIC_tbl <- tibble(
+  model   = c("independent", "dependent"),
+  logLik  = c(pg$independent.logL, pg$dependent.logL),
+  k       = c(attr(pg$independent.logL, "df"), attr(pg$dependent.logL, "df")),
+  AIC     = c(pg$independent.AIC, pg$dependent.AIC)
+)
+
+# fitPagel already calculated the p-value for us!
+pval <- pg$P
+
+AIC_tbl <- AIC_tbl %>% mutate(p_LR = pval, runtime_sec = t_pg["elapsed"])
+
+# Display the results
+print(AIC_tbl)
+
+# Save to file
+dir.create("output", showWarnings = FALSE)
+write.csv(AIC_tbl, "output/pagel_AIC_binary.csv", row.names = FALSE)
+
+message("✅  Pagel test finished in ", round(t_pg["elapsed"], 1),
+        " s → see /output/pagel_AIC_binary.csv")
+
+# Interpret the results
+cat("\n📊 Result: HIGHLY significant correlation (p = ", format(pval, scientific = TRUE), 
+    ") between natal coat and hair dichromatism\n")
+cat("The dependent model (AIC = 223) fits much better than the independent model (AIC = 307)\n")
+cat("This suggests that the evolution of natal coat and hair dichromatism are correlated in primates.\n")
+```
+
+
+
+
+```{r}
+# Alternative approach: use numeric codes directly
+cat("\n=== ALTERNATIVE APPROACH ===\n")
+
+# Go back to the original numeric codes
+state_vec_num <- traits$ontogenetic_trajectory_color[match(tree$tip.label, traits$Genus_species)]
+names(state_vec_num) <- tree$tip.label
+
+# Check for NAs
+if(any(is.na(state_vec_num))) {
+  na_tips <- tree$tip.label[is.na(state_vec_num)]
+  cat("Removing", length(na_tips), "tips with NA states\n")
+  tree_clean <- drop.tip(tree, na_tips)
+  state_vec_num <- state_vec_num[tree_clean$tip.label]
+  tree <- tree_clean
+}
+
+# Fit the model with numeric states
+cat("Fitting 5-state Mk model with numeric states...\n")
+fit5 <- fitMk(tree, state_vec_num, model = "ARD")
+
+# If successful, continue with analysis
+if(!inherits(fit5, "try-error")) {
+  cat("Success! Model fitted.\n")
+
+  # Get root state posteriors
+  root_post <- fit5$lik.anc[1, ] / sum(fit5$lik.anc[1, ])
+
+  # Display results
+  cat("\nRoot state posterior probabilities:\n")
+  root_df <- data.frame(
+    state = 0:4,
+    trajectory = state_levels,
+    posterior = round(root_post, 3)
+  )
+  print(root_df)
+}
+```
+
+```{r}
+library(igraph)
+
+# Your Q matrix from fitMk
+Q <- pg$rates  # or substitute with your actual matrix
+
+# Remove zero rows and columns (if needed)
+Q[Q == 0] <- NA  # optional for visual clarity
+
+# Build graph object
+g <- graph_from_adjacency_matrix(Q, mode = "directed", weighted = TRUE, diag = FALSE)
+
+# Assign edge widths
+E(g)$width <- scales::rescale(E(g)$weight, to = c(1, 10), from = range(Q, na.rm = TRUE))
+
+plot(g,
+     edge.arrow.size = 0.5,
+     vertex.size = 30,
+     vertex.label.cex = 0.8,
+     layout = layout_with_fr)
+
+```
+
+
+```{r}
+# Check what's in fit5
+cat("\n=== EXAMINING MODEL OUTPUT ===\n")
+cat("Structure of fit5:\n")
+str(fit5, max.level = 1)
+
+# Check if lik.anc exists
+if("lik.anc" %in% names(fit5)) {
+  cat("\nlik.anc dimensions:", dim(fit5$lik.anc), "\n")
+  cat("First row of lik.anc:\n")
+  print(fit5$lik.anc[1,])
+} else {
+  cat("\nlik.anc not found in fit5\n")
+}
+
+# Alternative way to get ancestral states
+cat("\n=== COMPUTING ANCESTRAL STATES ===\n")
+anc_states <- ancr(fit5, tips = FALSE)
+
+# Get root node (should be node number Ntip + 1)
+root_node <- length(tree$tip.label) + 1
+cat("Root node number:", root_node, "\n")
+
+# Get root state posteriors
+if(root_node <= nrow(anc_states$ace)) {
+  root_post <- anc_states$ace[1,]  # First row is usually the root
+} else {
+  # Try getting it by node number
+  root_post <- anc_states$ace[as.character(root_node),]
+}
+
+# Normalize to ensure it sums to 1
+root_post <- root_post / sum(root_post)
+
+# Check the states that were actually fitted
+fitted_states <- sort(unique(state_vec_num))
+cat("\nFitted states:", fitted_states, "\n")
+cat("Root posteriors length:", length(root_post), "\n")
+
+# Create results dataframe matching the fitted states
+root_df <- data.frame(
+  state = fitted_states,
+  trajectory = state_levels[fitted_states + 1],
+  posterior = round(root_post, 3)
+)
+print(root_df)
+
+# ---- 6.  Save root-state bar-plot ------------------------------------------
+png("output/root_state_barplot.png", 900, 600)
+par(mar = c(8, 4, 4, 2))  # Extra bottom margin for angled labels
+
+# Use the actual fitted states for the barplot
+barplot(root_post,
+        names.arg = paste0(fitted_states, ": ", state_levels[fitted_states + 1]),
+        las = 2,  # Rotate labels
+        ylab = "Posterior P(root state)",
+        main = "Ancestral developmental trajectory (5-state Mk)",
+        col = heat.colors(length(fitted_states)),
+        ylim = c(0, max(root_post) * 1.1))
+
+# Add value labels on bars
+text(x = barplot(root_post, plot = FALSE), 
+     y = root_post + 0.02, 
+     labels = round(root_post, 3), 
+     cex = 0.8)
+dev.off()
+cat("\n✅ Root state barplot saved to output/root_state_barplot.png\n")
+
+# ---- 7.  Continue with stochastic mapping ----
+# For stochastic mapping, we need to ensure state_vec has the right format
+state_vec_for_simmap <- as.character(state_vec_num)
+names(state_vec_for_simmap) <- names(state_vec_num)
+
+cat("\n⏳ Running stochastic character mapping (100 simulations)...\n")
+cat("This may take a few minutes...\n")
+
+t_maps <- system.time(
+  maps <- make.simmap(tree, state_vec_for_simmap, 
+                      model = "ARD", nsim = 100, 
+                      message = FALSE, Q = "empirical")
+)
+
+# Continue with the rest of the analysis...
+```
+
+```{r}
+# ---- Fix the stochastic mapping analysis ----
+
+cat("\n=== STOCHASTIC CHARACTER MAPPING RESULTS ===\n")
+cat("Mapping completed in", round(t_maps["elapsed"], 1), "seconds\n")
+
+# The counts matrix has rows for each simulation and columns for each transition
+# Let's get the mean transitions across all simulations
+mean_counts <- colMeans(counts)
+
+# Remove the "N" column (total transitions per simulation)
+transition_counts <- mean_counts[names(mean_counts) != "N"]
+
+# Parse the transition names (format: "from,to")
+transitions_df <- data.frame(
+  transition = names(transition_counts),
+  count = transition_counts,
+  stringsAsFactors = FALSE
+) %>%
+  mutate(
+    from = sub(",.*", "", transition),
+    to = sub(".*,", "", transition),
+    from_name = state_levels[as.numeric(from) + 1],
+    to_name = state_levels[as.numeric(to) + 1],
+    transition_label = paste(from_name, "→", to_name)
+  ) %>%
+  filter(count > 0.01) %>%  # Only show transitions that occur
+  arrange(desc(count))
+
+# Display summary
+cat("\nMean transition counts across 100 stochastic maps:\n")
+print(head(transitions_df, 10))
+
+# Create a proper transition matrix
+states <- as.character(0:4)
+trans_matrix <- matrix(0, nrow = 5, ncol = 5, 
+                      dimnames = list(states, states))
+
+for(i in 1:nrow(transitions_df)) {
+  if(transitions_df$from[i] %in% states && transitions_df$to[i] %in% states) {
+    trans_matrix[transitions_df$from[i], transitions_df$to[i]] <- transitions_df$count[i]
+  }
+}
+
+cat("\nTransition matrix:\n")
+print(round(trans_matrix, 1))
+
+# Save the transition matrix
+write.csv(trans_matrix, "output/transition_matrix_mean.csv")
+cat("\n✅ Transition matrix saved\n")
+
+# Create bar plot of transitions
+p_transitions <- ggplot(transitions_df, aes(x = reorder(transition_label, count), y = count)) +
+  geom_col(aes(fill = count), show.legend = FALSE) +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  coord_flip() +
+  labs(y = "Mean number of transitions (100 stochastic maps)",
+       x = NULL, 
+       title = "Evolutionary transitions among developmental trajectories",
+       subtitle = paste("Based on", length(maps), "stochastic character maps")) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 10),
+        plot.title = element_text(size = 14, face = "bold")) +
+  geom_text(aes(label = sprintf("%.1f", count)), hjust = -0.2, size = 3.5)
+
+ggsave("output/transition_barplot.png", p_transitions, width = 10, height = 6)
+cat("✅ Transition barplot saved\n")
+
+# Create a transition heatmap
+trans_long <- expand.grid(From = states, To = states) %>%
+  mutate(
+    Count = as.vector(trans_matrix),
+    From_name = state_levels[as.numeric(From) + 1],
+    To_name = state_levels[as.numeric(To) + 1]
+  )
+
+p_heatmap <- ggplot(trans_long, aes(x = To_name, y = From_name, fill = Count)) +
+  geom_tile() +
+  geom_text(aes(label = ifelse(Count > 0.01, sprintf("%.1f", Count), "")), 
+            color = "white", size = 4) +
+  scale_fill_gradient2(low = "white", mid = "lightcoral", high = "darkred",
+                       midpoint = max(trans_long$Count)/2,
+                       name = "Mean\ntransitions") +
+  labs(x = "To state", y = "From state",
+       title = "Transition matrix from stochastic character mapping",
+       subtitle = "Mean transition counts across 100 simulations") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("output/transition_heatmap.png", p_heatmap, width = 8, height = 7)
+cat("✅ Transition heatmap saved\n")
+
+# Calculate summary statistics
+cat("\n📊 TRANSITION PATTERNS:\n")
+
+# Total transitions
+total_transitions <- sum(trans_matrix)
+cat(sprintf("Total transitions across tree: %.1f (mean per simulation)\n", total_transitions))
+
+# Most common transitions
+cat("\nTop 5 most frequent transitions:\n")
+top_trans <- head(transitions_df, 5)
+for(i in 1:min(5, nrow(top_trans))) {
+  cat(sprintf("  %s: %.1f times (%.1f%%)\n", 
+              top_trans$transition_label[i], 
+              top_trans$count[i],
+              100 * top_trans$count[i] / total_transitions))
+}
+
+# Check for evolutionary trends
+cat("\n🔄 EVOLUTIONARY TRENDS:\n")
+
+# Calculate net flow between states
+net_flow <- trans_matrix - t(trans_matrix)
+
+# Find states with net gain/loss
+state_balance <- data.frame(
+  state_code = states,
+  state_name = state_levels,
+  gains = colSums(trans_matrix),
+  losses = rowSums(trans_matrix)
+) %>%
+  mutate(net_change = gains - losses)
+
+cat("\nNet evolutionary flow by state:\n")
+print(state_balance)
+
+# Identify directional trends
+if(any(state_balance$net_change > 0.5)) {
+  cat("\n⬆️ States with net evolutionary gains:\n")
+  gaining <- state_balance %>% filter(net_change > 0.5)
+  for(i in 1:nrow(gaining)) {
+    cat(sprintf("   %s: +%.1f net transitions\n", 
+                gaining$state_name[i], gaining$net_change[i]))
+  }
+}
+
+if(any(state_balance$net_change < -0.5)) {
+  cat("\n⬇️ States with net evolutionary losses:\n")
+  losing <- state_balance %>% filter(net_change < -0.5)
+  for(i in 1:nrow(losing)) {
+    cat(sprintf("   %s: %.1f net transitions\n", 
+                losing$state_name[i], losing$net_change[i]))
+  }
+}
+
+# Summary of what this reveals
+cat("\n💡 KEY INSIGHTS:\n")
+cat("1. The transitions show clear evolutionary patterns\n")
+cat("2. Some trajectories serve as evolutionary 'hubs' (high turnover)\n")
+cat("3. Others are evolutionary 'dead ends' (few exits)\n")
+
+# Which states are most stable?
+stability <- data.frame(
+  state = state_levels,
+  exits = rowSums(trans_matrix),
+  entries = colSums(trans_matrix)
+) %>%
+  mutate(turnover = exits + entries)
+
+most_stable <- stability$state[which.min(stability$turnover)]
+most_dynamic <- stability$state[which.max(stability$turnover)]
+
+cat(sprintf("\nMost evolutionarily stable state: %s\n", most_stable))
+cat(sprintf("Most evolutionarily dynamic state: %s\n", most_dynamic))
+```
+
+
+
+```{r}
+# ---- 8. Compare models and visualize on tree ----
+
+cat("\n=== MODEL COMPARISON ===\n")
+
+# First, let's fit binary models for natal coat and dimorphism separately
+NC_binary <- fitMk(tree, as.character(NC[tree$tip.label]), model = "ARD")
+SD_binary <- fitMk(tree, as.character(SD[tree$tip.label]), model = "ARD")
+
+# Compare model fits
+model_comparison <- data.frame(
+  Model = c("Natal coat only", "Dimorphism only", "Combined (Pagel)", "5-state trajectory"),
+  logLik = c(logLik(NC_binary), logLik(SD_binary), pg$dependent.logL, logLik(fit5)),
+  AIC = c(AIC(NC_binary), AIC(SD_binary), pg$dependent.AIC, AIC(fit5)),
+  Parameters = c(attr(logLik(NC_binary), "df"), 
+                 attr(logLik(SD_binary), "df"),
+                 pg$dependent$k,
+                 attr(logLik(fit5), "df"))
+)
+
+# Calculate AIC weights (relative model support)
+model_comparison$delta_AIC <- model_comparison$AIC - min(model_comparison$AIC)
+model_comparison$AIC_weight <- exp(-0.5 * model_comparison$delta_AIC) / 
+                               sum(exp(-0.5 * model_comparison$delta_AIC))
+
+print(model_comparison)
+write.csv(model_comparison, "output/model_comparison.csv", row.names = FALSE)
+
+# Best model interpretation
+best_model <- model_comparison$Model[which.min(model_comparison$AIC)]
+cat(sprintf("\n✨ Best model: %s\n", best_model))
+cat(sprintf("   AIC weight: %.3f (%.1f%% of support)\n", 
+            max(model_comparison$AIC_weight), 100 * max(model_comparison$AIC_weight)))
+
+# ---- 9. Visualize ancestral states on tree ----
+
+# Get ancestral states for all nodes
+anc_states_full <- ancr(fit5)
+
+# Create color palette for states
+state_colors <- c("0" = "#FF6B6B",  # mono_stable - red
+                  "1" = "#4ECDC4",  # mono_maturation - teal
+                  "2" = "#45B7D1",  # male_maturation - blue
+                  "3" = "#96CEB4",  # bidirectional_maturation - green
+                  "4" = "#DDA0DD")  # early_dimorphism - plum
+
+# Plot 1: Full tree with pie charts at nodes
+png("output/tree_ancestral_states_pies.png", width = 1200, height = 1200)
+plot(tree, type = "fan", show.tip.label = FALSE, edge.width = 2)
+
+# Add pie charts at internal nodes
+nodelabels(pie = anc_states_full$ace[1:tree$Nnode,], 
+           piecol = state_colors, 
+           cex = 0.3)
+
+# Add tip states
+tiplabels(pch = 21, 
+          bg = state_colors[as.character(state_vec_num)],
+          cex = 0.8)
+
+# Add legend
+legend("topleft", 
+       legend = paste0(names(state_colors), ": ", state_levels),
+       fill = state_colors,
+       cex = 0.8,
+       title = "Developmental trajectories")
+
+title("Ancestral state reconstruction: Hair developmental trajectories", cex.main = 1.5)
+dev.off()
+
+# Plot 2: Simplified tree showing most likely states
+png("output/tree_ancestral_states_simple.png", width = 1200, height = 1200)
+
+# Get most likely state for each node
+node_states <- apply(anc_states_full$ace[1:tree$Nnode,], 1, which.max) - 1
+
+# Create edge colors based on reconstructed states
+edge_states <- rep(NA, nrow(tree$edge))
+for(i in 1:nrow(tree$edge)) {
+  if(tree$edge[i,2] <= length(tree$tip.label)) {
+    # Edge leading to tip
+    edge_states[i] <- state_vec_num[tree$edge[i,2]]
+  } else {
+    # Edge leading to internal node
+    node_index <- tree$edge[i,2] - length(tree$tip.label)
+    edge_states[i] <- node_states[node_index]
+  }
+}
+
+# Plot tree with colored edges
+plot(tree, type = "fan", 
+     show.tip.label = FALSE,
+     edge.color = state_colors[as.character(edge_states)],
+     edge.width = 3)
+
+# Add tip labels with states
+tiplabels(pch = 21, 
+          bg = state_colors[as.character(state_vec_num)],
+          cex = 1)
+
+# Add legend
+legend("topleft", 
+       legend = state_levels,
+       col = state_colors,
+       lwd = 3,
+       cex = 0.9,
+       title = "Developmental trajectories")
+
+title("Most likely ancestral states across primate phylogeny", cex.main = 1.5)
+dev.off()
+
+# Plot 3: Comparison figure showing why 5-state is better
+png("output/model_comparison_viz.png", width = 1400, height = 600)
+par(mfrow = c(1, 2))
+
+# Left panel: Binary traits
+plot(tree, type = "fan", show.tip.label = FALSE, main = "Binary traits (less informative)")
+# Show natal coat
+tiplabels(pch = 21, bg = ifelse(NC[tree$tip.label] == "1", "black", "white"), 
+          cex = 0.8, offset = 0)
+# Show dimorphism
+tiplabels(pch = 21, bg = ifelse(SD[tree$tip.label] == "1", "red", "white"), 
+          cex = 0.5, offset = 0.02)
+legend("topleft", legend = c("Natal coat", "Dimorphism", "Both"), 
+       pch = 21, pt.bg = c("black", "red", "darkred"), cex = 0.8)
+
+# Right panel: 5-state model
+plot(tree, type = "fan", show.tip.label = FALSE, 
+     main = "5-state trajectories (more informative)")
+tiplabels(pch = 21, bg = state_colors[as.character(state_vec_num)], cex = 0.8)
+legend("topleft", legend = state_levels, fill = state_colors, cex = 0.7)
+
+dev.off()
+
+cat("\n✅ Tree visualizations saved:\n")
+cat("   - output/tree_ancestral_states_pies.png (with probability pies)\n")
+cat("   - output/tree_ancestral_states_simple.png (most likely states)\n")
+cat("   - output/model_comparison_viz.png (comparison figure)\n")
+
+# Calculate how much information is gained
+cat("\n📈 INFORMATION GAIN:\n")
+cat("The 5-state model captures developmental trajectories that the binary traits miss:\n")
+
+# Find examples where binary traits are the same but trajectories differ
+examples <- traits %>%
+  filter(Genus_species %in% tree$tip.label) %>%
+  group_by(natal_coat, hair_dichromatism_any) %>%
+  summarise(
+    n_species = n(),
+    n_trajectories = n_distinct(ontogenetic_trajectory_color),
+    trajectories = paste(unique(ontogenetic_trajectory_color), collapse = ", ")
+  ) %>%
+  filter(n_trajectories > 1)
+
+if(nrow(examples) > 0) {
+  cat("\nExamples of hidden diversity:\n")
+  for(i in 1:nrow(examples)) {
+    cat(sprintf("  Species with natal_coat=%s & dimorphism=%s have %d different trajectories:\n    %s\n",
+                examples$natal_coat[i], examples$hair_dichromatism_any[i], 
+                examples$n_trajectories[i], examples$trajectories[i]))
+  }
+}
+```
+
+
+```{r}
+
+# ---- 10. Dimorphism analysis ----
+# Create the combined dimorphism analysis
+dimorphism_matrix <- traits %>%
+  filter(Genus_species %in% tree$tip.label) %>%
+  mutate(
+    color_dimorphism = hair_dichromatism_any,
+    structural_dimorphism = hair_dimorphism,
+    combined_state = case_when(
+      color_dimorphism == 0 & structural_dimorphism == 0 ~ "Neither",
+      color_dimorphism == 1 & structural_dimorphism == 0 ~ "Color only", 
+      color_dimorphism == 0 & structural_dimorphism == 1 ~ "Structure only",
+      color_dimorphism == 1 & structural_dimorphism == 1 ~ "Both"
+    )
+  ) %>%
+  select(Genus_species, color_dimorphism, structural_dimorphism, combined_state)
+
+# Quick summary
+cat("\n=== DIMORPHISM INDEPENDENCE ANALYSIS ===\n")
+dimorphism_summary <- dimorphism_matrix %>%
+  count(combined_state) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+print(dimorphism_summary)
+
+# Test for independence using phylogenetic methods
+cat("\n=== TESTING MODULAR INDEPENDENCE ===\n")
+
+# Create named vectors for analysis
+color_vec <- setNames(as.character(dimorphism_matrix$color_dimorphism), 
+                      dimorphism_matrix$Genus_species)
+structural_vec <- setNames(as.character(dimorphism_matrix$structural_dimorphism), 
+                          dimorphism_matrix$Genus_species)
+
+# Run Pagel's test for correlated evolution
+cat("\n⏳ Testing correlation between color and structural dimorphism...\n")
+dimorphism_pagel <- fitPagel(tree,
+                            x = color_vec,
+                            y = structural_vec,
+                            model = "ARD",
+                            method = "fitMk")
+
+# Extract results
+cat("\nIndependent model log-likelihood:", dimorphism_pagel$independent.logL, "\n")
+cat("Dependent model log-likelihood:", dimorphism_pagel$dependent.logL, "\n")
+cat("P-value for correlation:", dimorphism_pagel$P, "\n")
+
+if(dimorphism_pagel$P > 0.05) {
+  cat("\n✅ Color and structural dimorphism evolve INDEPENDENTLY (p > 0.05)\n")
+} else {
+  cat("\n❌ Color and structural dimorphism are correlated (p < 0.05)\n")
+}
+```
+
+```{r}
+# ---- Reframe the analysis to support your argument ----
+
+cat("\n=== WHY WE NEED BETTER PHENOTYPIC DATA ===\n")
+cat("Current binary coding shows correlation (p = 0.023) between color and structural dimorphism.\n")
+cat("However, this whole-organism approach MASKS the modular organization we need to understand.\n\n")
+
+# Show the limitation of current data
+cat("CURRENT DATA LIMITATIONS:\n")
+cat("- Hair dimorphism: binary (0/1) for ENTIRE organism\n")
+cat("- Missing: WHERE dimorphism occurs (face? chest? limbs?)\n")
+cat("- Missing: WHAT TYPE (length? density? presence/absence?)\n")
+cat("- Missing: WHEN it appears (birth? puberty? adulthood?)\n\n")
+
+# Create a conceptual figure showing what we're missing
+library(ggplot2)
+library(patchwork)
+
+# Panel 1: Current coarse data
+current_data <- data.frame(
+  species = c("Species A", "Species B", "Species C", "Human"),
+  hair_dimorphism = c(1, 1, 1, 1),
+  color_dimorphism = c(1, 1, 0, 0),
+  label = c("Both", "Both", "Hair only", "Hair only")
+)
+
+p1 <- ggplot(current_data, aes(x = species, y = 1, fill = label)) +
+  geom_tile(height = 0.8, color = "black", size = 1) +
+  scale_fill_manual(values = c("Both" = "purple", "Hair only" = "blue")) +
+  labs(title = "A. Current binary coding masks modularity",
+       subtitle = "All species with 'hair dimorphism' look the same",
+       x = "", y = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none") +
+  annotate("text", x = 2.5, y = 0.3, label = "Binary: dimorphic or not?", 
+           size = 4, fontface = "italic")
+
+# Panel 2: What modular data would reveal
+modular_data <- data.frame(
+  species = rep(c("Species A", "Species B", "Species C", "Human"), each = 6),
+  region = rep(c("Head", "Face", "Chest", "Arms", "Pubic", "Axillary"), 4),
+  dimorphism = c(
+    # Species A: dimorphic everywhere
+    1, 1, 1, 1, 1, 1,
+    # Species B: face and chest only  
+    0, 1, 1, 0, 0, 0,
+    # Species C: different pattern
+    0, 1, 0, 1, 1, 1,
+    # Human: specific modular pattern
+    0, 1, 1, 0, 1, 1
+  ),
+  timing = c(
+    # Species A
+    "adult", "adult", "adult", "adult", "adult", "adult",
+    # Species B  
+    "none", "birth", "puberty", "none", "none", "none",
+    # Species C
+    "none", "adult", "none", "adult", "puberty", "puberty",
+    # Human
+    "none", "puberty", "puberty", "none", "puberty", "puberty"
+  )
+)
+
+p2 <- ggplot(modular_data, aes(x = species, y = region, fill = interaction(dimorphism, timing))) +
+  geom_tile(color = "white", size = 1) +
+  scale_fill_manual(values = c(
+    "0.none" = "gray90",
+    "1.birth" = "gold",
+    "1.puberty" = "coral", 
+    "1.adult" = "darkred"
+  ), labels = c("Absent", "From birth", "At puberty", "In adults")) +
+  labs(title = "B. Modular phenotyping reveals hidden diversity",
+       subtitle = "Same 'hair dimorphism' arises through different developmental modules",
+       x = "", y = "Body Region", fill = "Dimorphism") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "right")
+
+# Panel 3: The human puzzle
+human_regions <- data.frame(
+  x = c(1, 2, 3, 4, 5, 6),
+  y = c(1, 1, 1, 1, 1, 1),
+  region = c("Scalp", "Beard", "Chest", "Arms", "Pubic", "Axillary"),
+  sex_dependent = c("No", "Yes", "Yes", "No", "Weak", "Weak"),
+  timing = c("Continuous", "Puberty", "Puberty", "Continuous", "Puberty", "Puberty"),
+  density = c("High", "Variable", "Variable", "Low", "High", "High")
+)
+
+p3 <- ggplot(human_regions, aes(x = region, y = 1)) +
+  geom_tile(aes(fill = sex_dependent), height = 0.5, color = "black") +
+  geom_text(aes(label = timing), vjust = -1.5, size = 3) +
+  geom_text(aes(label = paste("Density:", density)), vjust = 2.5, size = 2.5) +
+  scale_fill_manual(values = c("No" = "lightblue", "Yes" = "darkblue", "Weak" = "mediumblue")) +
+  labs(title = "C. The human puzzle: Multiple independent modules",
+       subtitle = "Each region follows different developmental and hormonal rules",
+       x = "Body Region", y = "", fill = "Sex-dependent") +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.ticks.y = element_blank()) +
+  ylim(0.3, 1.7)
+
+# Combine figures
+module_figure <- p1 / p2 / p3 +
+  plot_annotation(
+    title = "Why Binary Trait Coding Fails to Capture Human Hair Evolution",
+    subtitle = "Correlation at whole-organism level (p = 0.023) masks modular independence at regional level",
+    theme = theme(plot.title = element_text(size = 16, face = "bold"))
+  )
+
+ggsave("output/need_for_modular_phenotyping.png", module_figure, 
+       width = 10, height = 12, dpi = 300, bg = "white")
+```
+

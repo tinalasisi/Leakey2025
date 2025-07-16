@@ -1,0 +1,512 @@
+guide = guide_legend(order = 1, ncol = 1)) +
+theme(legend.position = "right",
+legend.title = element_text(size = 12, face = "bold"),
+legend.text = element_text(size = 9),
+legend.key.width = unit(0.2, "cm"))  # Narrower legend keys)
+# Extract ONLY the family legend
+family_legend <- get_legend(
+p_for_legend +
+guides(fill = guide_legend(ncol = 1, title = "Family"))
+)
+# Panel A: Binary with highlighted families but NO family legend shown
+p_binary_labeled <- ggtree(tree, layout = "circular", size = 0.5) %<+% tree_data_binary +
+geom_hilight(data = highlight_data,
+aes(node = node, fill = family),
+alpha = 0.2,
+show.legend = FALSE) +  # Hide family legend
+scale_fill_manual(values = primate_colors,
+drop = FALSE) +
+new_scale_fill() +
+geom_tippoint(aes(fill = natal_binary),
+size = 3, shape = 21, stroke = 0.1, color = "black") +
+scale_fill_manual(values = c("0" = "white", "1" = "black"),
+labels = c("Absent", "Present"),
+name = "Natal Coat") +
+ggtitle("Binary: Natal coat presence") +
+theme(
+legend.position = "bottom",
+legend.title.position = "top",
+legend.title = element_text(size = 9, hjust = 0.5),
+legend.text = element_text(size = 7),
+legend.key.size = unit(0.2, "cm"),
+legend.key.width = unit(0.2, "cm"),
+legend.margin = margin(t = -5),
+legend.box.spacing = unit(0.1, "cm"),
+plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+)
+# Panel B: Trajectories with highlighted families but NO family legend shown
+p_traj_labeled <- ggtree(tree, layout = "circular", size = 0.5) %<+% tree_data_traj +
+geom_hilight(data = highlight_data,
+aes(node = node, fill = family),
+alpha = 0.2,
+show.legend = FALSE) +  # Hide family legend
+scale_fill_manual(values = primate_colors,
+drop = FALSE) +
+new_scale_fill() +
+geom_tippoint(aes(fill = trajectory),
+size = 3, shape = 21, stroke = 0.1, color = "black") +
+# scale_fill_manual(values = trajectory_colors,
+#                   labels = c("Stable", "All mature",
+#                             "Males only", "Both sexes", "Early"),
+#                   name = "Trajectory") +
+scale_fill_manual(
+values = trajectory_colors,
+labels = c("Stable", "All mature", "Males only", "Both sexes", "Early"),
+name = "Trajectory",
+guide = guide_legend(nrow = 2)
+) +
+ggtitle("Phenomic: 5 developmental trajectories") +
+theme(
+legend.position = "bottom",
+legend.title.position = "top",
+legend.title = element_text(size = 9, hjust = 0.5),
+legend.text = element_text(size = 7),
+legend.key.size = unit(0.2, "cm"),
+legend.key.width = unit(0.2, "cm"),
+legend.margin = margin(t = -5),
+legend.box.spacing = unit(0.1, "cm"),
+plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+)
+library(patchwork)
+# Wrap only the first two panels with figure tags
+main_panels <- (p_binary_labeled | p_traj_labeled) +
+plot_layout(widths = c(1, 1)) +
+plot_annotation(
+tag_levels = "A",
+theme = theme(
+plot.tag = element_text(size = 14, face = "bold", hjust = -0.1, vjust = 1.2),
+plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+plot.subtitle = element_text(size = 10, hjust = 0.5, color = "gray40")
+)
+)
+# Add the legend as a third panel, with no tag
+final_labeled <- (main_panels | family_legend) +
+plot_layout(widths = c(2, 0.3))
+ggsave("output/binary_vs_phenomic_all_families.png", final_labeled,
+width = 9, height = 4.5, dpi = 300, bg = "white")
+library(cowplot)  # For get_legend()
+# Define all 14 primate families with their colors
+primate_families <- c(
+"Lemuridae", "Lepilemuridae", "Cheirogaleidae", "Indridae", "Daubentoniidae",
+"Loridae", "Galagonidae", "Tarsiidae", "Callitrichidae", "Cebidae",
+"Cercopithecidae", "Hylobatidae", "Pongidae", "Hominidae"
+)
+primate_colors <- c(
+Lemuridae = "#ff69b4",        # hot pink
+Lepilemuridae = "#ff1493",     # deep pink
+Cheirogaleidae = "#da70d6",    # orchid
+Indridae = "#ba55d3",          # medium orchid
+Daubentoniidae = "#9370db",    # medium purple
+Loridae = "#7b68ee",           # medium slate blue
+Galagonidae = "#6495ed",       # cornflower blue
+Tarsiidae = "#4169e1",         # royal blue
+Callitrichidae = "#228b22",    # forest green
+Cebidae = "#32cd32",           # lime green
+Cercopithecidae = "#8B4513",   # saddle brown (warm brown)
+Hylobatidae = "#ffd700",       # gold
+Pongidae = "#ff8c00",          # dark orange
+Hominidae = "#dc143c"          # crimson
+)
+# Update family_info to use exact family names
+family_info <- traits %>%
+select(Genus_species, family) %>%
+filter(Genus_species %in% tree$tip.label) %>%
+mutate(family_clean = str_to_title(family))
+# Create a data frame with node information for all families
+highlight_data <- data.frame()
+for(fam in primate_families) {
+fam_tips <- family_info %>%
+filter(family_clean == fam) %>%
+pull(Genus_species)
+if(length(fam_tips) > 0) {
+if(length(fam_tips) > 1) {
+fam_node <- MRCA(tree, intersect(fam_tips, tree$tip.label))
+} else {
+fam_node <- which(tree$tip.label == fam_tips[1])
+}
+if(!is.null(fam_node)) {
+highlight_data <- rbind(highlight_data, data.frame(
+node = fam_node,
+family = fam
+))
+}
+}
+}
+# Set factor levels to ensure consistent ordering
+highlight_data$family <- factor(highlight_data$family, levels = primate_families)
+# Create a plot with family legend visible (for extraction)
+p_for_legend <- ggtree(tree, layout = "circular", size = 0.6) %<+% tree_data_binary +
+geom_hilight(data = highlight_data,
+aes(node = node, fill = family),
+alpha = 0.2) +
+scale_fill_manual(values = primate_colors,
+name = "Family",
+drop = FALSE,
+guide = guide_legend(order = 1, ncol = 1)) +
+theme(legend.position = "right",
+legend.title = element_text(size = 12, face = "bold"),
+legend.text = element_text(size = 9),
+legend.key.width = unit(0.2, "cm"))  # Narrower legend keys)
+# Extract ONLY the family legend
+family_legend <- get_legend(
+p_for_legend +
+guides(fill = guide_legend(ncol = 1, title = "Family"))
+)
+# Panel A: Binary with highlighted families but NO family legend shown
+p_binary_labeled <- ggtree(tree, layout = "circular", size = 0.5) %<+% tree_data_binary +
+geom_hilight(data = highlight_data,
+aes(node = node, fill = family),
+alpha = 0.2,
+show.legend = FALSE) +  # Hide family legend
+scale_fill_manual(values = primate_colors,
+drop = FALSE) +
+new_scale_fill() +
+geom_tippoint(aes(fill = natal_binary),
+size = 3, shape = 21, stroke = 0.1, color = "black") +
+scale_fill_manual(values = c("0" = "white", "1" = "black"),
+labels = c("Absent", "Present"),
+name = "Natal Coat") +
+ggtitle("Binary: Natal coat presence") +
+theme(
+legend.position = "bottom",
+legend.title.position = "top",
+legend.title = element_text(size = 9, hjust = 0.5),
+legend.text = element_text(size = 7),
+legend.key.size = unit(0.2, "cm"),
+legend.key.width = unit(0.2, "cm"),
+legend.margin = margin(t = -5),
+legend.box.spacing = unit(0.1, "cm"),
+plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+)
+# Panel B: Trajectories with highlighted families but NO family legend shown
+p_traj_labeled <- ggtree(tree, layout = "circular", size = 0.5) %<+% tree_data_traj +
+geom_hilight(data = highlight_data,
+aes(node = node, fill = family),
+alpha = 0.2,
+show.legend = FALSE) +  # Hide family legend
+scale_fill_manual(values = primate_colors,
+drop = FALSE) +
+new_scale_fill() +
+geom_tippoint(aes(fill = trajectory),
+size = 3, shape = 21, stroke = 0.1, color = "black") +
+# scale_fill_manual(values = trajectory_colors,
+#                   labels = c("Stable", "All mature",
+#                             "Males only", "Both sexes", "Early"),
+#                   name = "Trajectory") +
+scale_fill_manual(
+values = trajectory_colors,
+labels = c("Stable", "All mature", "Males only", "Both sexes", "Early"),
+name = "Trajectory",
+guide = guide_legend(nrow = 2)
+) +
+ggtitle("Phenomic: 5 developmental trajectories") +
+theme(
+legend.position = "bottom",
+legend.title.position = "top",
+legend.title = element_text(size = 9, hjust = 0.5),
+legend.text = element_text(size = 7),
+legend.key.size = unit(0.2, "cm"),
+legend.key.width = unit(0.2, "cm"),
+legend.margin = margin(t = -5),
+legend.box.spacing = unit(0.1, "cm"),
+plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+)
+library(patchwork)
+# Wrap only the first two panels with figure tags
+main_panels <- (p_binary_labeled | p_traj_labeled) +
+plot_layout(widths = c(1, 1)) +
+plot_annotation(
+tag_levels = "A",
+theme = theme(
+plot.tag = element_text(size = 14, face = "bold", hjust = -0.1, vjust = 1.2),
+plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+plot.subtitle = element_text(size = 10, hjust = 0.5, color = "gray40")
+)
+)
+# Add the legend as a third panel, with no tag
+final_labeled <- (main_panels | family_legend) +
+plot_layout(widths = c(2, 0.3))
+ggsave("output/binary_vs_phenomic_all_families.png", final_labeled,
+width = 9, height = 4.5, dpi = 300, bg = "white")
+library(cowplot)  # For get_legend()
+# Define all 14 primate families with their colors
+primate_families <- c(
+"Lemuridae", "Lepilemuridae", "Cheirogaleidae", "Indridae", "Daubentoniidae",
+"Loridae", "Galagonidae", "Tarsiidae", "Callitrichidae", "Cebidae",
+"Cercopithecidae", "Hylobatidae", "Pongidae", "Hominidae"
+)
+primate_colors <- c(
+Lemuridae = "#ff69b4",        # hot pink
+Lepilemuridae = "#ff1493",     # deep pink
+Cheirogaleidae = "#da70d6",    # orchid
+Indridae = "#ba55d3",          # medium orchid
+Daubentoniidae = "#9370db",    # medium purple
+Loridae = "#7b68ee",           # medium slate blue
+Galagonidae = "#6495ed",       # cornflower blue
+Tarsiidae = "#4169e1",         # royal blue
+Callitrichidae = "#228b22",    # forest green
+Cebidae = "#32cd32",           # lime green
+Cercopithecidae = "#8B4513",   # saddle brown (warm brown)
+Hylobatidae = "#ffd700",       # gold
+Pongidae = "#ff8c00",          # dark orange
+Hominidae = "#dc143c"          # crimson
+)
+# Update family_info to use exact family names
+family_info <- traits %>%
+select(Genus_species, family) %>%
+filter(Genus_species %in% tree$tip.label) %>%
+mutate(family_clean = str_to_title(family))
+# Create a data frame with node information for all families
+highlight_data <- data.frame()
+for(fam in primate_families) {
+fam_tips <- family_info %>%
+filter(family_clean == fam) %>%
+pull(Genus_species)
+if(length(fam_tips) > 0) {
+if(length(fam_tips) > 1) {
+fam_node <- MRCA(tree, intersect(fam_tips, tree$tip.label))
+} else {
+fam_node <- which(tree$tip.label == fam_tips[1])
+}
+if(!is.null(fam_node)) {
+highlight_data <- rbind(highlight_data, data.frame(
+node = fam_node,
+family = fam
+))
+}
+}
+}
+# Set factor levels to ensure consistent ordering
+highlight_data$family <- factor(highlight_data$family, levels = primate_families)
+# Create a plot with family legend visible (for extraction)
+p_for_legend <- ggtree(tree, layout = "circular", size = 0.6) %<+% tree_data_binary +
+geom_hilight(data = highlight_data,
+aes(node = node, fill = family),
+alpha = 0.2) +
+scale_fill_manual(values = primate_colors,
+name = "Family",
+drop = FALSE,
+guide = guide_legend(order = 1, ncol = 1)) +
+theme(legend.position = "right",
+legend.title = element_text(size = 12, face = "bold"),
+legend.text = element_text(size = 9),
+legend.key.width = unit(0.2, "cm"))  # Narrower legend keys)
+# Extract ONLY the family legend
+family_legend <- get_legend(
+p_for_legend +
+guides(fill = guide_legend(ncol = 1, title = "Family"))
+)
+# Panel A: Binary with highlighted families but NO family legend shown
+p_binary_labeled <- ggtree(tree, layout = "circular", size = 0.5) %<+% tree_data_binary +
+geom_hilight(data = highlight_data,
+aes(node = node, fill = family),
+alpha = 0.2,
+show.legend = FALSE) +  # Hide family legend
+scale_fill_manual(values = primate_colors,
+drop = FALSE) +
+new_scale_fill() +
+geom_tippoint(aes(fill = natal_binary),
+size = 3, shape = 21, stroke = 0.1, color = "black") +
+scale_fill_manual(values = c("0" = "white", "1" = "black"),
+labels = c("Absent", "Present"),
+name = "Natal Coat") +
+ggtitle("Binary: Natal coat presence") +
+theme(
+legend.position = "bottom",
+legend.title.position = "top",
+legend.title = element_text(size = 9, hjust = 0.5),
+legend.text = element_text(size = 7),
+legend.key.size = unit(0.2, "cm"),
+legend.key.width = unit(0.2, "cm"),
+legend.margin = margin(t = -5),
+legend.box.spacing = unit(0.1, "cm"),
+plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+)
+# Panel B: Trajectories with highlighted families but NO family legend shown
+p_traj_labeled <- ggtree(tree, layout = "circular", size = 0.5) %<+% tree_data_traj +
+geom_hilight(data = highlight_data,
+aes(node = node, fill = family),
+alpha = 0.2,
+show.legend = FALSE) +  # Hide family legend
+scale_fill_manual(values = primate_colors,
+drop = FALSE) +
+new_scale_fill() +
+geom_tippoint(aes(fill = trajectory),
+size = 3, shape = 21, stroke = 0.1, color = "black") +
+# scale_fill_manual(values = trajectory_colors,
+#                   labels = c("Stable", "All mature",
+#                             "Males only", "Both sexes", "Early"),
+#                   name = "Trajectory") +
+scale_fill_manual(
+values = trajectory_colors,
+labels = c("Stable", "All mature", "Males only", "Both sexes", "Early"),
+name = "Trajectory",
+guide = guide_legend(nrow = 2)
+) +
+ggtitle("Phenomic: 5 developmental trajectories") +
+theme(
+legend.position = "bottom",
+legend.title.position = "top",
+legend.title = element_text(size = 9, hjust = 0.5),
+legend.text = element_text(size = 7),
+legend.key.size = unit(0.2, "cm"),
+legend.key.width = unit(0.2, "cm"),
+legend.margin = margin(t = -5),
+legend.box.spacing = unit(0.1, "cm"),
+plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+)
+library(patchwork)
+library(patchwork)
+# Tag just the two plots
+main_panels <- (p_binary_labeled | p_traj_labeled) +
+plot_annotation(
+tag_levels = "A",
+theme = theme(
+plot.tag = element_text(size = 14, face = "bold", hjust = -0.1, vjust = 1.2),
+plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+plot.subtitle = element_text(size = 10, hjust = 0.5, color = "gray40")
+)
+)
+# Now add the legend in a third column using a full layout definition
+final_labeled <- (main_panels | family_legend) +
+plot_layout(ncol = 3, widths = c(1, 1, 0.15))
+ggsave("output/binary_vs_phenomic_all_families.png", final_labeled,
+width = 9, height = 4.5, dpi = 300, bg = "white")
+library(cowplot)  # For get_legend()
+# Define all 14 primate families with their colors
+primate_families <- c(
+"Lemuridae", "Lepilemuridae", "Cheirogaleidae", "Indridae", "Daubentoniidae",
+"Loridae", "Galagonidae", "Tarsiidae", "Callitrichidae", "Cebidae",
+"Cercopithecidae", "Hylobatidae", "Pongidae", "Hominidae"
+)
+primate_colors <- c(
+Lemuridae = "#ff69b4",        # hot pink
+Lepilemuridae = "#ff1493",     # deep pink
+Cheirogaleidae = "#da70d6",    # orchid
+Indridae = "#ba55d3",          # medium orchid
+Daubentoniidae = "#9370db",    # medium purple
+Loridae = "#7b68ee",           # medium slate blue
+Galagonidae = "#6495ed",       # cornflower blue
+Tarsiidae = "#4169e1",         # royal blue
+Callitrichidae = "#228b22",    # forest green
+Cebidae = "#32cd32",           # lime green
+Cercopithecidae = "#8B4513",   # saddle brown (warm brown)
+Hylobatidae = "#ffd700",       # gold
+Pongidae = "#ff8c00",          # dark orange
+Hominidae = "#dc143c"          # crimson
+)
+# Update family_info to use exact family names
+family_info <- traits %>%
+select(Genus_species, family) %>%
+filter(Genus_species %in% tree$tip.label) %>%
+mutate(family_clean = str_to_title(family))
+# Create a data frame with node information for all families
+highlight_data <- data.frame()
+for(fam in primate_families) {
+fam_tips <- family_info %>%
+filter(family_clean == fam) %>%
+pull(Genus_species)
+if(length(fam_tips) > 0) {
+if(length(fam_tips) > 1) {
+fam_node <- MRCA(tree, intersect(fam_tips, tree$tip.label))
+} else {
+fam_node <- which(tree$tip.label == fam_tips[1])
+}
+if(!is.null(fam_node)) {
+highlight_data <- rbind(highlight_data, data.frame(
+node = fam_node,
+family = fam
+))
+}
+}
+}
+# Set factor levels to ensure consistent ordering
+highlight_data$family <- factor(highlight_data$family, levels = primate_families)
+# Create a plot with family legend visible (for extraction)
+p_for_legend <- ggtree(tree, layout = "circular", size = 0.6) %<+% tree_data_binary +
+geom_hilight(data = highlight_data,
+aes(node = node, fill = family),
+alpha = 0.2) +
+scale_fill_manual(values = primate_colors,
+name = "Family",
+drop = FALSE,
+guide = guide_legend(order = 1, ncol = 1)) +
+theme(legend.position = "right",
+legend.title = element_text(size = 12, face = "bold"),
+legend.text = element_text(size = 9),
+legend.key.width = unit(0.2, "cm"))  # Narrower legend keys)
+# Extract ONLY the family legend
+family_legend <- get_legend(
+p_for_legend +
+guides(fill = guide_legend(ncol = 1, title = "Family"))
+)
+# Panel A: Binary with highlighted families but NO family legend shown
+p_binary_labeled <- ggtree(tree, layout = "circular", size = 0.5) %<+% tree_data_binary +
+geom_hilight(data = highlight_data,
+aes(node = node, fill = family),
+alpha = 0.2,
+show.legend = FALSE) +  # Hide family legend
+scale_fill_manual(values = primate_colors,
+drop = FALSE) +
+new_scale_fill() +
+geom_tippoint(aes(fill = natal_binary),
+size = 3, shape = 21, stroke = 0.1, color = "black") +
+scale_fill_manual(values = c("0" = "white", "1" = "black"),
+labels = c("Absent", "Present"),
+name = "Natal Coat") +
+ggtitle("Binary: Natal coat presence") +
+theme(
+legend.position = "bottom",
+legend.title.position = "top",
+legend.title = element_text(size = 9, hjust = 0.5),
+legend.text = element_text(size = 7),
+legend.key.size = unit(0.2, "cm"),
+legend.key.width = unit(0.2, "cm"),
+legend.margin = margin(t = -5),
+legend.box.spacing = unit(0.1, "cm"),
+plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+)
+# Panel B: Trajectories with highlighted families but NO family legend shown
+p_traj_labeled <- ggtree(tree, layout = "circular", size = 0.5) %<+% tree_data_traj +
+geom_hilight(data = highlight_data,
+aes(node = node, fill = family),
+alpha = 0.2,
+show.legend = FALSE) +  # Hide family legend
+scale_fill_manual(values = primate_colors,
+drop = FALSE) +
+new_scale_fill() +
+geom_tippoint(aes(fill = trajectory),
+size = 3, shape = 21, stroke = 0.1, color = "black") +
+# scale_fill_manual(values = trajectory_colors,
+#                   labels = c("Stable", "All mature",
+#                             "Males only", "Both sexes", "Early"),
+#                   name = "Trajectory") +
+scale_fill_manual(
+values = trajectory_colors,
+labels = c("Stable", "All mature", "Males only", "Both sexes", "Early"),
+name = "Trajectory",
+guide = guide_legend(nrow = 2)
+) +
+ggtitle("Phenomic: 5 developmental trajectories") +
+theme(
+legend.position = "bottom",
+legend.title.position = "top",
+legend.title = element_text(size = 9, hjust = 0.5),
+legend.text = element_text(size = 7),
+legend.key.size = unit(0.2, "cm"),
+legend.key.width = unit(0.2, "cm"),
+legend.margin = margin(t = -5),
+legend.box.spacing = unit(0.1, "cm"),
+plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+)
+# Combine plots with family legend on the right
+final_labeled <- (p_binary_labeled | p_traj_labeled | family_legend) +
+plot_layout(widths = c(1, 1, 0.3)) +
+plot_annotation(
+# title = "Binary vs. Phenomic Coding Reveals Hidden Developmental Diversity",
+# subtitle = "Primate families highlighted with transparent colors from strepsirrhines (pink/purple) through platyrrhines (green) to catarrhines (brown/yellow/orange/red)",
+theme = theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+plot.subtitle = element_text(size = 10, hjust = 0.5, color = "gray40"))
+)
+ggsave("output/binary_vs_phenomic_all_families.png", final_labeled,
+width = 9, height = 4.5, dpi = 300, bg = "white")

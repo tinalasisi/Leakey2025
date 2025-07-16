@@ -1,0 +1,179 @@
+---
+title: "prelim_plots"
+author: "Tina Lasisi"
+date: "2025-07-06"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+## 0 · Setup
+```{r setup}
+library(ape)
+library(phytools)
+library(tidyverse)
+library(ggtree)
+library(ggtreeExtra)   # for new_scale_fill()
+library(cowplot)       # get_legend()
+library(patchwork)
+
+```
+
+```{r}
+tree   <- read.nexus("data/updated_pruned_tree.nex")
+traits <- read_csv("data/primate_hair_traits_prelim_data.csv", show_col_types = FALSE)
+
+```
+
+```{r}
+# Path to the workspace you saved earlier
+rdata_path <- "output/session_2025-07-06_21-03-12/workspace.RData"
+
+# Only load if fit5 is not already in memory
+if (!exists("fit5")) {
+  if (file.exists(rdata_path)) {
+    loaded <- load(rdata_path)   # returns a character vector of object names
+    message("Loaded: ", paste(loaded, collapse = ", "))
+  } else {
+    stop("Cannot find ", rdata_path)
+  }
+}
+
+```
+
+
+## Discrete-state model (Mk)
+```{r}
+state_levels <- c("mono_stable","mono_maturation","male_maturation",
+                  "bidirectional_maturation","early_dimorphism")
+
+traits <- traits %>%
+  mutate(traj_code = match(ontogenetic_trajectory_color, state_levels) - 1)
+
+state_vec_num <- traits$traj_code[match(tree$tip.label, traits$Genus_species)]
+names(state_vec_num) <- tree$tip.label
+
+fit5       <- fitMk(tree, state_vec_num, model = "ARD")
+anc_states <- ancr(fit5, tips = FALSE)
+
+```
+
+## Pagel
+```{r}
+run_pagel <- function(tree, traits, x_col, y_col, label) {
+  x_bin <- setNames(as.numeric(traits[[x_col]] == 1), traits$Genus_species)
+  y_bin <- setNames(as.numeric(traits[[y_col]] == 1), traits$Genus_species)
+  keep  <- tree$tip.label[!is.na(x_bin[tree$tip.label]) & !is.na(y_bin[tree$tip.label])]
+  fit   <- fitPagel(drop.tip(tree, setdiff(tree$tip.label, keep)),
+                    x = x_bin[keep], y = y_bin[keep], model = "ARD")
+  cat("\n=== Pagel test:", label, "===\n",
+      "Species:", length(keep),
+      "  LR:", round(fit$lik.ratio,2),
+      "  p:", signif(fit$P,3),
+      "  ΔAIC:", round(fit$independent.AIC - fit$dependent.AIC,1), "\n")
+  invisible(fit)
+}
+
+run_pagel(tree, traits, "natal_coat", "hair_dichromatism_any",      "natal × dichrom_any")
+run_pagel(tree, traits, "natal_coat", "hair_dichromatism_complete", "natal × dichrom_complete")
+
+```
+
+## Dataframes
+
+```{r}
+# binary and trajectory tibbles
+tree_data_binary <- tibble(Genus_species = tree$tip.label,
+                           natal_binary  = traits$natal_coat[match(tree$tip.label,
+                                                                    traits$Genus_species)])
+tree_data_traj   <- tibble(Genus_species = tree$tip.label,
+                           trajectory    = as.character(state_vec_num))
+
+# family information (needed for colouring & highlighting)
+family_info <- traits %>%
+  select(Genus_species, family) %>%
+  mutate(family_clean = str_to_title(family))
+
+```
+
+## Figure
+
+```{r}
+# ----- colour palettes -----
+trajectory_colors <- c("0"="white","1"="#ff9b54","2"="#70d6ff",
+                       "3"="#d62828","4"="hotpink")
+
+primate_families <- c("Lemuridae","Lepilemuridae","Cheirogaleidae","Indridae",
+                      "Daubentoniidae","Loridae","Galagonidae","Tarsiidae",
+                      "Callitrichidae","Cebidae","Cercopithecidae",
+                      "Hylobatidae","Pongidae","Hominidae")
+
+primate_colors <- c(
+  Lemuridae="#ff69b4", Lepilemuridae="#ff1493", Cheirogaleidae="#da70d6",
+  Indridae="#ba55d3", Daubentoniidae="#9370db", Loridae="#7b68ee",
+  Galagonidae="#6495ed", Tarsiidae="#4169e1", Callitrichidae="#228b22",
+  Cebidae="#32cd32", Cercopithecidae="#8B4513", Hylobatidae="#ffd700",
+  Pongidae="#ff8c00", Hominidae="#dc143c")
+
+# ----- build highlight data (family MRCA nodes) -----
+highlight_data <- map_dfr(primate_families, function(fam) {
+  tips <- family_info$Genus_species[family_info$family_clean == fam]
+  if (length(tips)==0) return(NULL)
+  node <- if (length(tips)>1) MRCA(tree, tips) else which(tree$tip.label==tips[1])
+  tibble(node=node, family=fam)
+}) %>% mutate(family=factor(family, levels=primate_families))
+
+# ----- helper to make one circular tree panel -----
+make_panel <- function(dat, tip_aes, fill_scale, title_txt) {
+  ggtree(tree, layout="circular", size=0.5) %<+% dat +
+    geom_hilight(data=highlight_data, aes(node=node, fill=family), alpha=0.2,
+                 show.legend=FALSE) +
+    scale_fill_manual(values=primate_colors, drop=FALSE) +
+    new_scale_fill() +
+    geom_tippoint(aes(fill=.data[[tip_aes]]), size=3, shape=21,
+                  stroke=0.1, color="black") +
+    fill_scale + ggtitle(title_txt) +
+    theme(legend.position="bottom",
+          plot.title=element_text(size=14, face="bold", hjust=0.5),
+          legend.title.position="top",
+          legend.title=element_text(size=9),
+          legend.text=element_text(size=7),
+          legend.key.size=unit(0.2,"cm"),
+          legend.key.width=unit(0.2,"cm"),
+          legend.margin=margin(t=-5),
+          legend.box.spacing=unit(0.1,"cm"))
+}
+
+p_bin  <- make_panel(tree_data_binary,
+                     "natal_binary",
+                     scale_fill_manual(values=c("0"="white","1"="black"),
+                                       labels=c("Absent","Present"),
+                                       name="Natal coat"),
+                     "Binary: natal coat presence")
+
+p_traj <- make_panel(tree_data_traj,
+                     "trajectory",
+                     scale_fill_manual(values=trajectory_colors,
+                                       labels=c("Stable","All mature","Males only",
+                                                "Both sexes","Early"),
+                                       name="Trajectory",
+                                       guide=guide_legend(nrow=2)),
+                     "Phenomic: 5 developmental trajectories")
+
+family_legend <- get_legend(
+  ggtree(tree, layout="circular") +
+    geom_hilight(data=highlight_data, aes(node=node, fill=family)) +
+    scale_fill_manual(values=primate_colors, name="Family") +
+    theme(legend.position="right")
+)
+
+final_labeled <- (p_bin | p_traj | family_legend) +
+  plot_layout(widths=c(1,1,0.3))
+
+ggsave("output/binary_vs_phenomic_all_families.png", final_labeled,
+       width=9, height=4.5, dpi=300, bg="white")
+
+final_labeled
+
+```
+
