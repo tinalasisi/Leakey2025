@@ -9,3 +9,7 @@ analysis/*png
 analysis/*html
 analysis/*_cache
 analysis/site_libs
+
+# OpenApePose data (too large for git)
+data/OpenApePose/images/
+data/OpenApePose/*.7z.*
