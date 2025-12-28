@@ -1,12 +1,16 @@
 #!/bin/bash
 # Download OpenApePose dataset from Dryad
-# Run this on Great Lakes in a screen/tmux session
+# Run this from the Leakey2025 repo root on Great Lakes
 # Total size: ~175 GB
+#
+# Usage:
+#   cd /nfs/turbo/lsa-tlasisi1/tlasisi/Leakey2025
+#   screen -S download
+#   bash code/download_openapepose.sh
 
-# Set up directory
-cd /nfs/turbo/lsa-tlasisi1/tlasisi/
-mkdir -p primate-phenomics/OpenApePose
-cd primate-phenomics/OpenApePose
+# Set up directory (relative to repo root)
+mkdir -p data/OpenApePose
+cd data/OpenApePose
 
 echo "Starting downloads at $(date)"
 echo "Downloading to: $(pwd)"
