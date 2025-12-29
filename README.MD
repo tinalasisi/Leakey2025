@@ -1,23 +1,32 @@
-# OpenApePose
-Jan Zimmermann (University of Minnesota)
+# Primate Hair Trait Evolution - Leakey 2025
 
----
+This repository contains data and analyses for studying the phylogenetic evolution of hair traits in primates, with a focus on sexual dimorphism and ontogenetic trajectories of hair color development.
 
-OpenApePose is an annotated image dataset for training models on ape and monkey computer vision pose estimation
+## Project Overview
 
-## Description of the data and file structure
+This project investigates how hair color traits evolve across primate species, examining:
+- Sexual dimorphism in hair color
+- Natal coat characteristics
+- Ontogenetic trajectories (developmental changes in hair color)
+- Phylogenetic patterns of trait evolution
 
-Unpack all archives.
+## Repository Structure
 
-Dependencies: OpenMMLab; MMdetect, MMpose
+- `analysis/` - R Markdown files containing phylogenetic comparative analyses
+- `code/` - Command-line scripts and shared R code
+- `data/` - Primate hair trait datasets and phylogenetic trees
+  - Contains OpenApePose image dataset for computer vision analysis (large files ignored in git)
+- `docs/` - Rendered website and documentation
+- `output/` - Analysis results and session data
 
-/annotations # contains annotations of all images
--> annotations are in standard COCO format
-/code # code for training the supplied deep learning model
--> animal_oap_dataset.py is the general dataloader for the OpenApePose dataset
--> hrnet_w48_oap_256x192_full.py is the general model structure
--> TopDownOAPDataset.py defines the dictionary keypoints
--> __init__.py is the namespace
-/images # all images used in training
-/models # final model for benchmarking
--> hrnet_w48_oap_256x192_full.pth final training save point of the model
+## Methods
+
+The project uses phylogenetic comparative methods including:
+- Mk models for discrete trait evolution
+- Ancestral state reconstruction
+- Transition rate analysis between ontogenetic states
+
+## Dependencies
+
+- R packages: ape, phytools, tidyverse, ggtree, workflowr
+- For computer vision components: OpenMMLab, MMdetect, MMpose
