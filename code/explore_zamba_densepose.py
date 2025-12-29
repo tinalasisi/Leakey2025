@@ -78,7 +78,7 @@ def setup_project_directories():
     
     Assumes script is in project/code/ and creates:
         project/output/
-        project/images/
+        project/data/
     """
     # Get the directory containing this script
     script_dir = Path(__file__).parent.resolve()
@@ -91,21 +91,21 @@ def setup_project_directories():
         project_dir = Path.cwd()
     
     output_dir = project_dir / "output"
-    images_dir = project_dir / "images"
+    data_dir = project_dir / "data"
     
     output_dir.mkdir(exist_ok=True)
-    images_dir.mkdir(exist_ok=True)
+    data_dir.mkdir(exist_ok=True)
     
     print(f"Project directory: {project_dir}")
     print(f"Code directory:    {script_dir}")
     print(f"Output directory:  {output_dir}")
-    print(f"Images directory:  {images_dir}")
+    print(f"Data directory:    {data_dir}")
     
     return {
         'project': project_dir,
         'code': script_dir,
         'output': output_dir,
-        'images': images_dir,
+        'data': data_dir,
     }
 
 # ============================================================
@@ -299,6 +299,7 @@ def run_zamba_densepose(images_dir, output_dir, output_type='chimp_anatomy', ren
     if not image_files:
         print(f"✗ No images found in {images_dir}")
         print(f"  Please add .jpg or .png files to: {images_dir}")
+        print(f"  Or use --data-dir to specify a different directory")
         return None
     
     print(f"Found {len(image_files)} image(s):")
@@ -484,7 +485,7 @@ def inspect_zamba_output(output_dir):
 def main():
     parser = argparse.ArgumentParser(description='Explore Zamba DensePose output')
     parser.add_argument('--image', type=str, help='Path to a specific image to process')
-    parser.add_argument('--images-dir', type=str, help='Directory containing images')
+    parser.add_argument('--data-dir', type=str, help='Directory containing images')
     parser.add_argument('--output-type', type=str, default='chimp_anatomy',
                         help='Zamba output type (default: chimp_anatomy)')
     parser.add_argument('--skip-run', action='store_true', 
@@ -499,21 +500,21 @@ def main():
     # Setup directories in current project folder
     dirs = setup_project_directories()
     
-    # If specific image provided, copy to images dir
+    # If specific image provided, copy to data dir
     if args.image:
         import shutil
         src = Path(args.image)
         if src.exists():
-            dst = dirs['images'] / src.name
+            dst = dirs['data'] / src.name
             shutil.copy(src, dst)
-            print(f"Copied {src.name} to images directory")
+            print(f"Copied {src.name} to data directory")
         else:
             print(f"Image not found: {args.image}")
             return
     
-    # Override images dir if specified
-    if args.images_dir:
-        dirs['images'] = Path(args.images_dir)
+    # Override data dir if specified
+    if args.data_dir:
+        dirs['data'] = Path(args.data_dir)
     
     # Check installation
     if not check_zamba_installation():
@@ -523,7 +524,7 @@ def main():
     # Run Zamba (unless skipping)
     if not args.skip_run:
         result_dir = run_zamba_densepose(
-            dirs['images'], 
+            dirs['data'], 
             dirs['output'],
             output_type=args.output_type
         )
