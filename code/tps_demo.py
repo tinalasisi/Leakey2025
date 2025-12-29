@@ -292,7 +292,7 @@ def main():
     
     # Normalize source landmarks to approximate [0, 1] range
     img_h, img_w = image.shape[:2]
-    source_normalized = source_landmarks.copy()
+    source_normalized = source_landmarks.astype(float)
     source_normalized[:, 0] /= img_w
     source_normalized[:, 1] /= img_h
     
