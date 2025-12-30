@@ -19,12 +19,34 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 import matplotlib.patches as mpatches
+import sys
+
+# Add detectron2 DensePose to path for unpickling
+sys.path.insert(0, '/nfs/turbo/lsa-tlasisi1/tlasisi/detectron2_repo/projects/DensePose')
+
+import torch
+
+# Import DensePose structures (needed for unpickling)
+try:
+    from densepose.structures import DensePoseEmbeddingPredictorOutput
+except ImportError:
+    print("Warning: Could not import DensePose structures")
 
 
 def load_densepose_results(pkl_path):
     """Load results from apply_net.py dump output."""
-    with open(pkl_path, 'rb') as f:
-        data = pickle.load(f)
+    # Try torch.load first (handles PyTorch tensors)
+    try:
+        # weights_only=False needed for PyTorch 2.0+
+        data = torch.load(pkl_path, map_location='cpu', weights_only=False)
+    except TypeError:
+        # Older PyTorch versions don't have weights_only
+        data = torch.load(pkl_path, map_location='cpu')
+    except Exception as e:
+        print(f"torch.load failed: {e}")
+        # Fall back to pickle
+        with open(pkl_path, 'rb') as f:
+            data = pickle.load(f)
     
     print(f"Loaded {len(data)} image results")
     
