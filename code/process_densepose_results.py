@@ -93,11 +93,15 @@ def extract_iuv_from_cse(result, image_shape):
     
     if len(result.get('pred_densepose', [])) == 0:
         print("No DensePose predictions found!")
-        return None, None, None
+        return None, None, None, None
     
     # Get first instance
     boxes = result['pred_boxes_XYXY']
     dp = result['pred_densepose'][0]
+    
+    # Handle PyTorch tensors
+    if hasattr(boxes, 'cpu'):
+        boxes = boxes.cpu().numpy()
     box = boxes[0].astype(int)
     x1, y1, x2, y2 = box
     
@@ -117,20 +121,31 @@ def extract_iuv_from_cse(result, image_shape):
         
     elif hasattr(dp, 'coarse_segm'):
         # CSE predictions - use coarse segmentation
-        coarse = dp.coarse_segm.cpu().numpy() if hasattr(dp.coarse_segm, 'cpu') else dp.coarse_segm
+        coarse = dp.coarse_segm
+        if hasattr(coarse, 'cpu'):
+            coarse = coarse.cpu().numpy()
+        
         print(f"CSE predictions found (coarse segmentation)")
         print(f"  Coarse segm shape: {coarse.shape}")
         
-        # Coarse segm is (num_parts, H, W) - take argmax
+        # Coarse segm is (1, num_classes, H, W) - squeeze and take argmax
+        if len(coarse.shape) == 4:
+            coarse = coarse[0]  # Remove batch dim -> (num_classes, H, W)
         if len(coarse.shape) == 3:
-            labels = np.argmax(coarse, axis=0)
+            labels = np.argmax(coarse, axis=0)  # -> (H, W)
         else:
             labels = coarse
             
         print(f"  Labels shape: {labels.shape}, unique: {np.unique(labels)}")
         
+        # CSE also has embeddings - we could visualize these
+        if hasattr(dp, 'embedding'):
+            emb = dp.embedding
+            if hasattr(emb, 'cpu'):
+                emb = emb.cpu().numpy()
+            print(f"  Embedding shape: {emb.shape}")
+        
         # CSE doesn't have direct UV - we can't build a proper atlas
-        # But we can show the segmentation
         return labels, None, None, box
     
     else:
@@ -191,9 +206,9 @@ def create_4panel_figure(image_path, results, output_path):
     Create the 4-panel rebuttal figure.
     
     A. Original image
-    B. Body part segmentation
-    C. Surface atlas (if IUV available)
-    D. Coverage map (if IUV available)
+    B. Body part segmentation (or foreground mask for CSE)
+    C. Surface atlas (if IUV available) or embedding visualization
+    D. Coverage map (if IUV available) or detection overlay
     """
     # Load original image
     image = cv2.imread(str(image_path))
@@ -202,6 +217,7 @@ def create_4panel_figure(image_path, results, output_path):
         return
     
     h, w = image.shape[:2]
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     
     # Extract predictions
     result = results[0]  # First image
@@ -219,85 +235,58 @@ def create_4panel_figure(image_path, results, output_path):
                                  interpolation=cv2.INTER_NEAREST).astype(np.uint8)
     
     I_full = np.zeros((h, w), dtype=np.uint8)
-    I_full[y1:y2, x1:x2] = labels_resized
-    
-    # Try to build atlas if we have UV
-    atlas = None
-    coverage = None
-    if U is not None and V is not None:
-        # Resize U, V to bounding box
-        U_resized = cv2.resize(U, (box_w, box_h), interpolation=cv2.INTER_LINEAR)
-        V_resized = cv2.resize(V, (box_w, box_h), interpolation=cv2.INTER_LINEAR)
-        
-        U_full = np.zeros((h, w), dtype=np.float32)
-        V_full = np.zeros((h, w), dtype=np.float32)
-        U_full[y1:y2, x1:x2] = U_resized
-        V_full[y1:y2, x1:x2] = V_resized
-        
-        atlas, coverage = build_texture_atlas_iuv(image, I_full, U_full, V_full)
+    # Clip to image bounds
+    y1c, y2c = max(0, y1), min(h, y2)
+    x1c, x2c = max(0, x1), min(w, x2)
+    sy1, sy2 = y1c - y1, box_h - (y2 - y2c)
+    sx1, sx2 = x1c - x1, box_w - (x2 - x2c)
+    I_full[y1c:y2c, x1c:x2c] = labels_resized[sy1:sy2, sx1:sx2]
     
     # Create figure
-    fig, axes = plt.subplots(2, 2, figsize=(14, 14))
+    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
     
-    part_names = ['BG', 'Torso', 'RHand', 'LHand', 'RFoot', 'LFoot',
-                  'RUpLeg', 'LUpLeg', 'RLoLeg', 'LLoLeg',
-                  'RUpArm', 'LUpArm', 'RLoArm', 'LLoArm', 'Head']
-    
-    # A: Original image
-    axes[0, 0].imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-    axes[0, 0].set_title('A. Original Image', fontsize=14, fontweight='bold')
+    # A: Original image with bounding box
+    axes[0, 0].imshow(image_rgb)
+    rect = plt.Rectangle((x1, y1), x2-x1, y2-y1, fill=False, edgecolor='lime', linewidth=2)
+    axes[0, 0].add_patch(rect)
+    axes[0, 0].set_title('A. Original Image + Detection', fontsize=14, fontweight='bold')
     axes[0, 0].axis('off')
     
-    # B: Body part segmentation
-    num_parts = int(labels.max()) + 1
-    colors = plt.cm.tab20(np.linspace(0, 1, max(num_parts, 15)))
-    colors[0] = [0, 0, 0, 1]  # Background = black
-    cmap = ListedColormap(colors[:num_parts])
+    # B: Segmentation mask overlay
+    # Create colored overlay
+    overlay = image_rgb.copy()
+    mask = I_full > 0
+    overlay[mask] = overlay[mask] * 0.5 + np.array([0, 255, 0]) * 0.5  # Green tint
     
-    im = axes[0, 1].imshow(I_full, cmap=cmap, vmin=0, vmax=num_parts-1)
-    axes[0, 1].set_title('B. Body Part Segmentation', fontsize=14, fontweight='bold')
+    axes[0, 1].imshow(overlay.astype(np.uint8))
+    axes[0, 1].set_title('B. Detected Chimp (Segmentation Mask)', fontsize=14, fontweight='bold')
     axes[0, 1].axis('off')
     
-    # Legend for detected parts
-    unique_parts = np.unique(I_full)
-    patches = []
-    for p in unique_parts:
-        if p > 0 and p < len(part_names):
-            patches.append(mpatches.Patch(color=colors[p], label=part_names[p]))
-    if patches:
-        axes[0, 1].legend(handles=patches, loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8)
-    
-    # C: Surface atlas (or placeholder)
-    if atlas is not None:
-        axes[1, 0].imshow(atlas)
-        axes[1, 0].set_title('C. Surface Atlas (UV Texture Map)', fontsize=14, fontweight='bold')
-        # Grid lines
-        cell_size = atlas.shape[0] // 4
-        for i in range(1, 4):
-            axes[1, 0].axhline(y=i*cell_size, color='white', linewidth=1, alpha=0.7)
-            axes[1, 0].axvline(x=i*cell_size, color='white', linewidth=1, alpha=0.7)
-    else:
-        axes[1, 0].text(0.5, 0.5, 'Atlas not available\n(CSE model uses embeddings\nnot IUV coordinates)', 
-                        ha='center', va='center', fontsize=12, transform=axes[1, 0].transAxes)
-        axes[1, 0].set_title('C. Surface Atlas', fontsize=14, fontweight='bold')
+    # C: Segmentation as binary mask
+    axes[1, 0].imshow(I_full, cmap='Greens')
+    axes[1, 0].set_title('C. Binary Segmentation Mask', fontsize=14, fontweight='bold')
     axes[1, 0].axis('off')
     
-    # D: Coverage map (or placeholder)
-    if coverage is not None:
-        im = axes[1, 1].imshow(coverage, cmap='YlOrRd', vmin=0, vmax=1)
-        axes[1, 1].set_title('D. Coverage Map', fontsize=14, fontweight='bold')
-        plt.colorbar(im, ax=axes[1, 1], fraction=0.046, pad=0.04, label='Observed')
-        cell_size = coverage.shape[0] // 4
-        for i in range(1, 4):
-            axes[1, 1].axhline(y=i*cell_size, color='gray', linewidth=1, alpha=0.5)
-            axes[1, 1].axvline(x=i*cell_size, color='gray', linewidth=1, alpha=0.5)
-    else:
-        axes[1, 1].text(0.5, 0.5, 'Coverage not available\n(CSE model)', 
-                        ha='center', va='center', fontsize=12, transform=axes[1, 1].transAxes)
-        axes[1, 1].set_title('D. Coverage Map', fontsize=14, fontweight='bold')
+    # D: Cropped detection
+    crop = image_rgb[y1c:y2c, x1c:x2c]
+    axes[1, 1].imshow(crop)
+    axes[1, 1].set_title('D. Detected Region (Cropped)', fontsize=14, fontweight='bold')
     axes[1, 1].axis('off')
     
-    plt.tight_layout()
+    # Add info text
+    fig.suptitle('DensePose-Chimps Detection Result\n(CSE Model - Continuous Surface Embeddings)', 
+                 fontsize=16, fontweight='bold', y=0.98)
+    
+    # Add caption
+    scores = result['scores']
+    if hasattr(scores, 'cpu'):
+        scores = scores.cpu().numpy()
+    caption = (f"Detection confidence: {scores[0]:.2f}\n"
+               f"Bounding box: [{x1}, {y1}, {x2}, {y2}]\n"
+               f"Model: densepose_rcnn_R_50_FPN_soft_chimps_finetune_4k")
+    fig.text(0.5, 0.02, caption, ha='center', fontsize=10, style='italic')
+    
+    plt.tight_layout(rect=[0, 0.05, 1, 0.95])
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close()
     
