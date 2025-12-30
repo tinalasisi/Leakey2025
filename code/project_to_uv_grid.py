@@ -136,7 +136,7 @@ def create_demo_figure(image_path, pkl_path, output_path):
     print(f"Loaded image: {image.shape}")
     
     # Load DensePose results
-    results = torch.load(pkl_path, map_location='cpu')
+    results = torch.load(pkl_path, map_location='cpu', weights_only=False)
     
     result = results[0]
     
