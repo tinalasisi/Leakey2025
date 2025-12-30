@@ -8,11 +8,11 @@ This demonstrates the "genome alignment" concept:
 - Pixel appearance values are projected onto their universal coordinates
 """
 
-import pickle
 import numpy as np
 import cv2
 from pathlib import Path
 import sys
+import torch
 
 # Configuration
 PROJECT_ROOT = Path("/nfs/turbo/lsa-tlasisi1/tlasisi/Leakey2025")
@@ -136,8 +136,7 @@ def create_demo_figure(image_path, pkl_path, output_path):
     print(f"Loaded image: {image.shape}")
     
     # Load DensePose results
-    with open(pkl_path, 'rb') as f:
-        results = pickle.load(f)
+    results = torch.load(pkl_path, map_location='cpu')
     
     result = results[0]
     
