@@ -3,18 +3,17 @@
 Create body part collage from DensePose predictions.
 
 Simple visualization showing:
-- Anterior (front) body parts
-- Posterior (back) body parts
-- Coverage statistics
+- Original + segmentation with legend
+- Anterior (front) body parts extracted
+- Posterior (back) body parts extracted
 
-For grant rebuttal demo - shows body surface extraction, not UV mapping.
+For grant rebuttal demo.
 """
 
 import sys
 sys.path.insert(0, '/nfs/turbo/lsa-tlasisi1/tlasisi/detectron2_repo/projects/DensePose')
 
 import torch
-import pickle
 import numpy as np
 import cv2
 from pathlib import Path
@@ -22,188 +21,218 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
 
-# DensePose 24 body parts grouped by anterior/posterior
-BODY_PARTS = {
-    # Posterior (back) parts
-    'posterior': {
-        1: 'Torso',
-        7: 'R-UpperLeg', 8: 'L-UpperLeg',
-        11: 'R-LowerLeg', 12: 'L-LowerLeg', 
-        15: 'L-UpperArm', 16: 'R-UpperArm',
-        19: 'L-LowerArm', 20: 'R-LowerArm',
-        23: 'R-Head', 24: 'L-Head',
-    },
-    # Anterior (front) parts
-    'anterior': {
-        2: 'Torso',
-        3: 'R-Hand', 4: 'L-Hand',
-        5: 'L-Foot', 6: 'R-Foot',
-        9: 'R-UpperLeg', 10: 'L-UpperLeg',
-        13: 'R-LowerLeg', 14: 'L-LowerLeg',
-        17: 'L-UpperArm', 18: 'R-UpperArm',
-        21: 'L-LowerArm', 22: 'R-LowerArm',
-    }
+# DensePose 24 body parts - official naming
+PART_NAMES = {
+    0: 'Background',
+    1: 'Torso (back)', 2: 'Torso (front)',
+    3: 'Right Hand', 4: 'Left Hand',
+    5: 'Left Foot', 6: 'Right Foot',
+    7: 'Right Upper Leg (back)', 8: 'Left Upper Leg (back)',
+    9: 'Right Upper Leg (front)', 10: 'Left Upper Leg (front)',
+    11: 'Right Lower Leg (back)', 12: 'Left Lower Leg (back)',
+    13: 'Right Lower Leg (front)', 14: 'Left Lower Leg (front)',
+    15: 'Left Upper Arm (back)', 16: 'Right Upper Arm (back)',
+    17: 'Left Upper Arm (front)', 18: 'Right Upper Arm (front)',
+    19: 'Left Lower Arm (back)', 20: 'Right Lower Arm (back)',
+    21: 'Left Lower Arm (front)', 22: 'Right Lower Arm (front)',
+    23: 'Right Head', 24: 'Left Head',
 }
 
-# Template layout for body parts (row, col) in a grid
-# Organized anatomically: head top, arms sides, torso center, legs bottom
-TEMPLATE_LAYOUT = {
-    'anterior': {
-        'Head': (0, 1),
-        'R-UpperArm': (1, 0), 'L-UpperArm': (1, 2),
-        'R-LowerArm': (2, 0), 'L-LowerArm': (2, 2),
-        'Torso': (1, 1),
-        'R-Hand': (3, 0), 'L-Hand': (3, 2),
-        'R-UpperLeg': (2, 1), 'L-UpperLeg': (2, 1),  # Share cell
-        'R-LowerLeg': (3, 1), 'L-LowerLeg': (3, 1),  # Share cell
-        'R-Foot': (4, 0), 'L-Foot': (4, 2),
-    },
-    'posterior': {
-        'R-Head': (0, 1), 'L-Head': (0, 1),  # Share cell
-        'R-UpperArm': (1, 0), 'L-UpperArm': (1, 2),
-        'R-LowerArm': (2, 0), 'L-LowerArm': (2, 2),
-        'Torso': (1, 1),
-        'R-UpperLeg': (2, 1), 'L-UpperLeg': (2, 1),
-        'R-LowerLeg': (3, 1), 'L-LowerLeg': (3, 1),
-    }
+# Which parts are anterior (front) vs posterior (back)
+ANTERIOR_PARTS = {2, 3, 4, 5, 6, 9, 10, 13, 14, 17, 18, 21, 22}
+POSTERIOR_PARTS = {1, 7, 8, 11, 12, 15, 16, 19, 20, 23, 24}
+
+# Template positions for anterior view (row, col) in 4x3 grid
+# Organized: head top-center, arms on sides, torso center, legs bottom
+ANTERIOR_LAYOUT = {
+    # Row 0: Hands
+    3: (0, 2),   # Right Hand
+    4: (0, 0),   # Left Hand
+    # Row 1: Upper arms, Torso
+    18: (1, 2),  # Right Upper Arm (front)
+    17: (1, 0),  # Left Upper Arm (front)
+    2: (1, 1),   # Torso (front)
+    # Row 2: Lower arms, Upper legs  
+    22: (2, 2),  # Right Lower Arm (front)
+    21: (2, 0),  # Left Lower Arm (front)
+    9: (2, 1),   # Right Upper Leg (front) - will combine with left
+    10: (2, 1),  # Left Upper Leg (front)
+    # Row 3: Feet, Lower legs
+    6: (3, 2),   # Right Foot
+    5: (3, 0),   # Left Foot
+    13: (3, 1),  # Right Lower Leg (front)
+    14: (3, 1),  # Left Lower Leg (front)
+}
+
+# Template positions for posterior view
+POSTERIOR_LAYOUT = {
+    # Row 0: Head
+    23: (0, 1),  # Right Head - combine
+    24: (0, 1),  # Left Head
+    # Row 1: Upper arms, Torso
+    16: (1, 2),  # Right Upper Arm (back)
+    15: (1, 0),  # Left Upper Arm (back)
+    1: (1, 1),   # Torso (back)
+    # Row 2: Lower arms, Upper legs
+    20: (2, 2),  # Right Lower Arm (back)
+    19: (2, 0),  # Left Lower Arm (back)
+    7: (2, 1),   # Right Upper Leg (back)
+    8: (2, 1),   # Left Upper Leg (back)
+    # Row 3: Lower legs
+    11: (3, 1),  # Right Lower Leg (back)
+    12: (3, 1),  # Left Lower Leg (back)
 }
 
 
 def load_results(pkl_path):
     """Load DensePose results."""
-    try:
-        data = torch.load(pkl_path, map_location='cpu', weights_only=False)
-    except TypeError:
-        data = torch.load(pkl_path, map_location='cpu')
+    data = torch.load(pkl_path, map_location='cpu', weights_only=False)
     return data
 
 
-def extract_body_parts(image_rgb, I_map, box):
-    """
-    Extract pixels for each body part.
+def get_colors():
+    """Get consistent colors for all 25 parts."""
+    colors = np.zeros((25, 4))
+    colors[0] = [0, 0, 0, 1]  # Background black
     
-    Returns dict mapping part_id -> cropped pixels (as image with alpha)
+    # Assign colors by body region for visual grouping
+    colors[1] = colors[2] = [0.8, 0.4, 0.4, 1]      # Torso - red-ish
+    colors[3] = colors[4] = [0.4, 0.8, 0.4, 1]      # Hands - green
+    colors[5] = colors[6] = [0.4, 0.4, 0.8, 1]      # Feet - blue
+    colors[7] = colors[8] = [0.9, 0.6, 0.3, 1]      # Upper leg back - orange
+    colors[9] = colors[10] = [0.9, 0.7, 0.4, 1]     # Upper leg front - light orange
+    colors[11] = colors[12] = [0.6, 0.3, 0.6, 1]    # Lower leg back - purple
+    colors[13] = colors[14] = [0.7, 0.4, 0.7, 1]    # Lower leg front - light purple
+    colors[15] = colors[16] = [0.3, 0.6, 0.6, 1]    # Upper arm back - teal
+    colors[17] = colors[18] = [0.4, 0.7, 0.7, 1]    # Upper arm front - light teal
+    colors[19] = colors[20] = [0.6, 0.6, 0.3, 1]    # Lower arm back - olive
+    colors[21] = colors[22] = [0.7, 0.7, 0.4, 1]    # Lower arm front - light olive
+    colors[23] = colors[24] = [0.9, 0.9, 0.5, 1]    # Head - yellow
+    
+    return colors
+
+
+def extract_part_pixels(image_rgb, I_map, box, part_id):
     """
+    Extract pixels for a specific body part.
+    
+    Returns RGBA image of just that part, or None if not present.
+    """
+    mask = (I_map == part_id)
+    if not mask.any():
+        return None
+    
     x1, y1, x2, y2 = box
-    h, w = I_map.shape
+    pred_h, pred_w = I_map.shape
+    img_h, img_w = image_rgb.shape[:2]
     
-    parts = {}
+    # Find bounding box of this part in prediction coords
+    ys, xs = np.where(mask)
+    py1, py2 = ys.min(), ys.max() + 1
+    px1, px2 = xs.min(), xs.max() + 1
     
-    for part_id in range(1, 25):
-        mask = (I_map == part_id)
-        if not mask.any():
-            continue
-        
-        # Find bounding box of this part
-        ys, xs = np.where(mask)
-        py1, py2 = ys.min(), ys.max() + 1
-        px1, px2 = xs.min(), xs.max() + 1
-        
-        # Extract the part with its mask
-        part_mask = mask[py1:py2, px1:px2]
-        
-        # Map to image coordinates
-        img_y1 = y1 + int(py1 * (y2 - y1) / h)
-        img_y2 = y1 + int(py2 * (y2 - y1) / h)
-        img_x1 = x1 + int(px1 * (x2 - x1) / w)
-        img_x2 = x1 + int(px2 * (x2 - x1) / w)
-        
-        # Clip to image bounds
-        img_h, img_w = image_rgb.shape[:2]
-        img_y1 = max(0, min(img_y1, img_h))
-        img_y2 = max(0, min(img_y2, img_h))
-        img_x1 = max(0, min(img_x1, img_w))
-        img_x2 = max(0, min(img_x2, img_w))
-        
-        if img_y2 <= img_y1 or img_x2 <= img_x1:
-            continue
-        
-        # Extract pixels
-        part_img = image_rgb[img_y1:img_y2, img_x1:img_x2].copy()
-        
-        # Resize mask to match
-        part_mask_resized = cv2.resize(
-            part_mask.astype(np.uint8), 
-            (part_img.shape[1], part_img.shape[0]),
-            interpolation=cv2.INTER_NEAREST
-        )
-        
-        # Create RGBA image
-        part_rgba = np.zeros((part_img.shape[0], part_img.shape[1], 4), dtype=np.uint8)
-        part_rgba[:, :, :3] = part_img
-        part_rgba[:, :, 3] = part_mask_resized * 255
-        
-        parts[part_id] = {
-            'image': part_rgba,
-            'pixel_count': part_mask_resized.sum(),
-        }
+    # Map to image coordinates
+    scale_y = (y2 - y1) / pred_h
+    scale_x = (x2 - x1) / pred_w
     
-    return parts
+    img_y1 = int(y1 + py1 * scale_y)
+    img_y2 = int(y1 + py2 * scale_y)
+    img_x1 = int(x1 + px1 * scale_x)
+    img_x2 = int(x1 + px2 * scale_x)
+    
+    # Clip to image bounds
+    img_y1 = max(0, min(img_y1, img_h))
+    img_y2 = max(0, min(img_y2, img_h))
+    img_x1 = max(0, min(img_x1, img_w))
+    img_x2 = max(0, min(img_x2, img_w))
+    
+    if img_y2 <= img_y1 or img_x2 <= img_x1:
+        return None
+    
+    # Extract image region
+    part_img = image_rgb[img_y1:img_y2, img_x1:img_x2].copy()
+    
+    # Get corresponding mask region and resize to match
+    part_mask = mask[py1:py2, px1:px2]
+    part_mask_resized = cv2.resize(
+        part_mask.astype(np.uint8),
+        (part_img.shape[1], part_img.shape[0]),
+        interpolation=cv2.INTER_NEAREST
+    )
+    
+    # Create RGBA
+    rgba = np.zeros((part_img.shape[0], part_img.shape[1], 4), dtype=np.uint8)
+    rgba[:, :, :3] = part_img
+    rgba[:, :, 3] = part_mask_resized * 255
+    
+    return rgba
 
 
-def create_body_collage(parts, view='anterior', cell_size=100):
+def create_body_template(parts_dict, layout, cell_size=120, grid_rows=4, grid_cols=3):
     """
-    Create a body part collage for one view (anterior or posterior).
+    Create a body template image with extracted parts placed anatomically.
     
-    Returns:
-        collage: RGB image
-        coverage: dict of region -> percentage filled
+    parts_dict: {part_id: rgba_image}
+    layout: {part_id: (row, col)}
     """
-    grid_rows, grid_cols = 5, 3
-    collage = np.zeros((grid_rows * cell_size, grid_cols * cell_size, 3), dtype=np.uint8)
-    collage[:] = 40  # Dark gray background
+    template = np.zeros((grid_rows * cell_size, grid_cols * cell_size, 3), dtype=np.uint8)
+    template[:] = 50  # Dark gray background
     
-    coverage = {}
-    part_mapping = BODY_PARTS[view]
+    # Track which cells have content
+    cells_filled = set()
     
-    for part_id, region_name in part_mapping.items():
-        if part_id not in parts:
-            coverage[region_name] = 0
+    for part_id, rgba in parts_dict.items():
+        if part_id not in layout:
             continue
         
-        part_data = parts[part_id]
-        part_img = part_data['image']
+        row, col = layout[part_id]
         
-        # Get grid position for this region
-        layout = TEMPLATE_LAYOUT[view]
-        if region_name not in layout:
+        # Resize part to fit cell
+        ph, pw = rgba.shape[:2]
+        if ph == 0 or pw == 0:
             continue
-        row, col = layout[region_name]
+            
+        scale = min(cell_size / pw, cell_size / ph) * 0.85
+        new_w = max(1, int(pw * scale))
+        new_h = max(1, int(ph * scale))
         
-        # Resize part to fit cell while maintaining aspect ratio
-        ph, pw = part_img.shape[:2]
-        scale = min(cell_size / pw, cell_size / ph) * 0.9
-        new_w = int(pw * scale)
-        new_h = int(ph * scale)
+        part_resized = cv2.resize(rgba, (new_w, new_h), interpolation=cv2.INTER_AREA)
         
-        if new_w > 0 and new_h > 0:
-            part_resized = cv2.resize(part_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-            
-            # Center in cell
-            y_offset = row * cell_size + (cell_size - new_h) // 2
-            x_offset = col * cell_size + (cell_size - new_w) // 2
-            
-            # Blend using alpha
-            alpha = part_resized[:, :, 3:4] / 255.0
-            rgb = part_resized[:, :, :3]
-            
-            roi = collage[y_offset:y_offset+new_h, x_offset:x_offset+new_w]
-            collage[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = (
+        # Position in cell
+        y_start = row * cell_size + (cell_size - new_h) // 2
+        x_start = col * cell_size + (cell_size - new_w) // 2
+        
+        # If cell already has content, offset slightly
+        if (row, col) in cells_filled:
+            x_start += 5
+            y_start += 5
+        cells_filled.add((row, col))
+        
+        # Blend using alpha
+        y_end = min(y_start + new_h, template.shape[0])
+        x_end = min(x_start + new_w, template.shape[1])
+        
+        actual_h = y_end - y_start
+        actual_w = x_end - x_start
+        
+        if actual_h > 0 and actual_w > 0:
+            alpha = part_resized[:actual_h, :actual_w, 3:4] / 255.0
+            rgb = part_resized[:actual_h, :actual_w, :3]
+            roi = template[y_start:y_end, x_start:x_end]
+            template[y_start:y_end, x_start:x_end] = (
                 alpha * rgb + (1 - alpha) * roi
             ).astype(np.uint8)
-        
-        coverage[region_name] = 100  # Mark as present
     
-    return collage, coverage
+    return template
 
 
 def create_figure(image_path, results, output_path):
-    """Create the visualization figure."""
+    """Create the 4-panel visualization."""
     
     # Load image
     image = cv2.imread(str(image_path))
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    h, w = image.shape[:2]
+    img_h, img_w = image.shape[:2]
     
     # Get predictions
     result = results[0]
@@ -211,142 +240,100 @@ def create_figure(image_path, results, output_path):
     if hasattr(boxes, 'cpu'):
         boxes = boxes.cpu().numpy()
     box = boxes[0].astype(int)
+    x1, y1, x2, y2 = box
     
     dp = result['pred_densepose'][0]
     labels = dp.labels.cpu().numpy() if hasattr(dp.labels, 'cpu') else dp.labels
+    pred_h, pred_w = labels.shape
     
-    # Extract body parts
-    parts = extract_body_parts(image_rgb, labels, box)
+    # Get unique parts detected
+    unique_parts = sorted([p for p in np.unique(labels) if p > 0])
+    print(f"Detected body parts: {unique_parts}")
+    for p in unique_parts:
+        print(f"  {p}: {PART_NAMES.get(p, 'Unknown')}")
     
-    print(f"Extracted {len(parts)} body parts:")
-    for part_id in sorted(parts.keys()):
-        # Find which view this belongs to
-        view = 'anterior' if part_id in BODY_PARTS['anterior'] else 'posterior'
-        name = BODY_PARTS[view].get(part_id, f'Part {part_id}')
-        print(f"  {part_id}: {name} ({view}) - {parts[part_id]['pixel_count']} pixels")
+    # Extract all body parts
+    all_parts = {}
+    anterior_parts = {}
+    posterior_parts = {}
     
-    # Create collages
-    anterior_collage, anterior_cov = create_body_collage(parts, 'anterior', cell_size=120)
-    posterior_collage, posterior_cov = create_body_collage(parts, 'posterior', cell_size=120)
+    for part_id in unique_parts:
+        rgba = extract_part_pixels(image_rgb, labels, box, part_id)
+        if rgba is not None:
+            all_parts[part_id] = rgba
+            if part_id in ANTERIOR_PARTS:
+                anterior_parts[part_id] = rgba
+            elif part_id in POSTERIOR_PARTS:
+                posterior_parts[part_id] = rgba
     
-    # Count coverage
-    anterior_parts = set(BODY_PARTS['anterior'].values())
-    posterior_parts = set(BODY_PARTS['posterior'].values())
+    print(f"\nExtracted {len(all_parts)} parts total")
+    print(f"  Anterior: {len(anterior_parts)} parts - {sorted(anterior_parts.keys())}")
+    print(f"  Posterior: {len(posterior_parts)} parts - {sorted(posterior_parts.keys())}")
     
-    anterior_detected = sum(1 for r in anterior_cov if anterior_cov[r] > 0)
-    posterior_detected = sum(1 for r in posterior_cov if posterior_cov[r] > 0)
-    
-    anterior_pct = 100 * anterior_detected / len(anterior_parts) if anterior_parts else 0
-    posterior_pct = 100 * posterior_detected / len(posterior_parts) if posterior_parts else 0
-    
-    # Create segmentation overlay
-    x1, y1, x2, y2 = box
+    # Create full-image segmentation map
     box_h, box_w = y2 - y1, x2 - x1
-    labels_resized = cv2.resize(labels.astype(np.float32), (box_w, box_h), 
+    labels_resized = cv2.resize(labels.astype(np.float32), (box_w, box_h),
                                  interpolation=cv2.INTER_NEAREST).astype(np.uint8)
     
-    I_full = np.zeros((h, w), dtype=np.uint8)
-    y1c, y2c = max(0, y1), min(h, y2)
-    x1c, x2c = max(0, x1), min(w, x2)
-    sy1, sy2 = y1c - y1, box_h - (y2 - y2c)
-    sx1, sx2 = x1c - x1, box_w - (x2 - x2c)
-    I_full[y1c:y2c, x1c:x2c] = labels_resized[sy1:sy2, sx1:sx2]
+    I_full = np.zeros((img_h, img_w), dtype=np.uint8)
+    y1c, y2c = max(0, y1), min(img_h, y2)
+    x1c, x2c = max(0, x1), min(img_w, x2)
+    I_full[y1c:y2c, x1c:x2c] = labels_resized[:y2c-y1c, :x2c-x1c]
     
-    # Create figure
-    fig = plt.figure(figsize=(16, 10))
+    # Get colors
+    colors = get_colors()
+    cmap = ListedColormap(colors)
     
-    # Layout: 2 rows
-    # Top: Original | Segmentation
-    # Bottom: Anterior template | Posterior template
+    # Create templates
+    anterior_template = create_body_template(anterior_parts, ANTERIOR_LAYOUT)
+    posterior_template = create_body_template(posterior_parts, POSTERIOR_LAYOUT)
     
-    ax1 = fig.add_subplot(2, 3, 1)
-    ax2 = fig.add_subplot(2, 3, 2)
-    ax3 = fig.add_subplot(2, 3, 3)
-    ax4 = fig.add_subplot(2, 3, 4)
-    ax5 = fig.add_subplot(2, 3, 5)
-    ax6 = fig.add_subplot(2, 3, 6)
+    # Create figure - 2x2 layout
+    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
     
-    # 1. Original image
-    ax1.imshow(image_rgb)
+    # A: Original image with detection
+    axes[0, 0].imshow(image_rgb)
     rect = plt.Rectangle((x1, y1), x2-x1, y2-y1, fill=False, edgecolor='lime', linewidth=2)
-    ax1.add_patch(rect)
-    ax1.set_title('A. Input Image', fontsize=12, fontweight='bold')
-    ax1.axis('off')
+    axes[0, 0].add_patch(rect)
+    axes[0, 0].set_title('A. Input Image', fontsize=14, fontweight='bold')
+    axes[0, 0].axis('off')
     
-    # 2. Body part segmentation with colors
-    colors = plt.cm.tab20(np.linspace(0, 1, 20))
-    colors2 = plt.cm.tab20b(np.linspace(0, 1, 5))
-    all_colors = np.vstack([np.array([[0,0,0,1]]), colors, colors2[:4]])  # 25 colors total
-    cmap = ListedColormap(all_colors)
+    # B: Body part segmentation with legend
+    axes[0, 1].imshow(I_full, cmap=cmap, vmin=0, vmax=24)
+    axes[0, 1].set_title('B. Body Part Segmentation', fontsize=14, fontweight='bold')
+    axes[0, 1].axis('off')
     
-    ax2.imshow(I_full, cmap=cmap, vmin=0, vmax=24)
-    ax2.set_title('B. Body Part Segmentation', fontsize=12, fontweight='bold')
-    ax2.axis('off')
+    # Add legend
+    legend_patches = []
+    for part_id in unique_parts:
+        color = colors[part_id]
+        name = PART_NAMES.get(part_id, f'Part {part_id}')
+        legend_patches.append(mpatches.Patch(color=color, label=f'{part_id}: {name}'))
     
-    # 3. Segmentation overlay on image
-    overlay = image_rgb.copy()
-    for part_id in range(1, 25):
-        mask = I_full == part_id
-        if mask.any():
-            color = (np.array(all_colors[part_id][:3]) * 255).astype(np.uint8)
-            overlay[mask] = overlay[mask] * 0.5 + color * 0.5
-    ax3.imshow(overlay.astype(np.uint8))
-    ax3.set_title('C. Segmentation Overlay', fontsize=12, fontweight='bold')
-    ax3.axis('off')
+    axes[0, 1].legend(handles=legend_patches, loc='center left', bbox_to_anchor=(1.02, 0.5),
+                      fontsize=8, frameon=True, fancybox=True)
     
-    # 4. Anterior collage
-    ax4.imshow(anterior_collage)
-    ax4.set_title(f'D. Anterior (Front) View\n{anterior_detected}/{len(anterior_parts)} regions', 
-                  fontsize=12, fontweight='bold')
-    ax4.axis('off')
+    # C: Anterior template
+    axes[1, 0].imshow(anterior_template)
+    axes[1, 0].set_title(f'C. Anterior (Front) - {len(anterior_parts)} parts', 
+                         fontsize=14, fontweight='bold')
+    axes[1, 0].axis('off')
     
-    # 5. Posterior collage
-    ax5.imshow(posterior_collage)
-    ax5.set_title(f'E. Posterior (Back) View\n{posterior_detected}/{len(posterior_parts)} regions',
-                  fontsize=12, fontweight='bold')
-    ax5.axis('off')
+    # D: Posterior template  
+    axes[1, 1].imshow(posterior_template)
+    axes[1, 1].set_title(f'D. Posterior (Back) - {len(posterior_parts)} parts',
+                         fontsize=14, fontweight='bold')
+    axes[1, 1].axis('off')
     
-    # 6. Coverage summary
-    ax6.axis('off')
-    
-    # Create coverage bar chart
-    regions = ['Head', 'Torso', 'UpperArm', 'LowerArm', 'Hand', 'UpperLeg', 'LowerLeg', 'Foot']
-    anterior_vals = []
-    posterior_vals = []
-    
-    for region in regions:
-        # Check if any version of this region was detected
-        ant_found = any(region in r and anterior_cov.get(r, 0) > 0 
-                       for r in ['L-'+region, 'R-'+region, region])
-        post_found = any(region in r and posterior_cov.get(r, 0) > 0 
-                        for r in ['L-'+region, 'R-'+region, region])
-        anterior_vals.append(1 if ant_found else 0)
-        posterior_vals.append(1 if post_found else 0)
-    
-    x = np.arange(len(regions))
-    width = 0.35
-    
-    ax6_inner = fig.add_axes([0.68, 0.12, 0.28, 0.35])
-    ax6_inner.barh(x - width/2, anterior_vals, width, label='Anterior', color='steelblue')
-    ax6_inner.barh(x + width/2, posterior_vals, width, label='Posterior', color='coral')
-    ax6_inner.set_yticks(x)
-    ax6_inner.set_yticklabels(regions)
-    ax6_inner.set_xlim(0, 1.2)
-    ax6_inner.set_xlabel('Detected')
-    ax6_inner.set_title('F. Coverage by Region', fontweight='bold')
-    ax6_inner.legend(loc='lower right', fontsize=8)
-    ax6_inner.set_xticks([0, 1])
-    ax6_inner.set_xticklabels(['No', 'Yes'])
-    
-    # Title
-    fig.suptitle('DensePose Body Surface Extraction Demo', fontsize=14, fontweight='bold', y=0.98)
+    # Main title
+    fig.suptitle('DensePose: Body Surface Extraction from Single Image', 
+                 fontsize=16, fontweight='bold', y=0.98)
     
     # Caption
-    total_parts = len([p for p in parts])
-    caption = f"Detected {total_parts} body part regions from single image. This demonstrates coordinate-based surface mapping, not image warping."
-    fig.text(0.5, 0.02, caption, ha='center', fontsize=10, style='italic')
+    caption = f"Extracted {len(all_parts)} body regions. This demonstrates coordinate-based surface mapping for coverage tracking."
+    fig.text(0.5, 0.02, caption, ha='center', fontsize=11, style='italic')
     
-    plt.tight_layout(rect=[0, 0.05, 1, 0.95])
+    plt.tight_layout(rect=[0, 0.04, 0.85, 0.95])
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
     
