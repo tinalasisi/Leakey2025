@@ -35,17 +35,21 @@ PART_NAMES = {
     17: 'Left Upper Arm (front)', 18: 'Right Upper Arm (front)',
     19: 'Left Lower Arm (back)', 20: 'Right Lower Arm (back)',
     21: 'Left Lower Arm (front)', 22: 'Right Lower Arm (front)',
-    23: 'Right Head', 24: 'Left Head',
+    23: 'Right Face', 24: 'Left Face',  # Face = anterior!
 }
 
 # Which parts are anterior (front) vs posterior (back)
-ANTERIOR_PARTS = {2, 3, 4, 5, 6, 9, 10, 13, 14, 17, 18, 21, 22}
-POSTERIOR_PARTS = {1, 7, 8, 11, 12, 15, 16, 19, 20, 23, 24}
+# Head/face (23, 24) is ANTERIOR - it's the face!
+# Hands (3, 4) and feet (5, 6) don't have front/back - putting in anterior
+ANTERIOR_PARTS = {2, 3, 4, 5, 6, 9, 10, 13, 14, 17, 18, 21, 22, 23, 24}
+POSTERIOR_PARTS = {1, 7, 8, 11, 12, 15, 16, 19, 20}
 
 # Template positions for anterior view (row, col) in 4x3 grid
 # Organized: head top-center, arms on sides, torso center, legs bottom
 ANTERIOR_LAYOUT = {
-    # Row 0: Hands
+    # Row 0: Head/Face, Hands
+    23: (0, 1),  # Right Face - combine in center
+    24: (0, 1),  # Left Face
     3: (0, 2),   # Right Hand
     4: (0, 0),   # Left Hand
     # Row 1: Upper arms, Torso
@@ -55,7 +59,7 @@ ANTERIOR_LAYOUT = {
     # Row 2: Lower arms, Upper legs  
     22: (2, 2),  # Right Lower Arm (front)
     21: (2, 0),  # Left Lower Arm (front)
-    9: (2, 1),   # Right Upper Leg (front) - will combine with left
+    9: (2, 1),   # Right Upper Leg (front)
     10: (2, 1),  # Left Upper Leg (front)
     # Row 3: Feet, Lower legs
     6: (3, 2),   # Right Foot
@@ -66,9 +70,7 @@ ANTERIOR_LAYOUT = {
 
 # Template positions for posterior view
 POSTERIOR_LAYOUT = {
-    # Row 0: Head
-    23: (0, 1),  # Right Head - combine
-    24: (0, 1),  # Left Head
+    # Row 0: empty (no head from back in this image)
     # Row 1: Upper arms, Torso
     16: (1, 2),  # Right Upper Arm (back)
     15: (1, 0),  # Left Upper Arm (back)
@@ -246,11 +248,20 @@ def create_figure(image_path, results, output_path):
     labels = dp.labels.cpu().numpy() if hasattr(dp.labels, 'cpu') else dp.labels
     pred_h, pred_w = labels.shape
     
-    # Get unique parts detected
+    # Diagnostic: show exactly what's in the labels
     unique_parts = sorted([p for p in np.unique(labels) if p > 0])
-    print(f"Detected body parts: {unique_parts}")
+    print(f"\n=== DIAGNOSTIC INFO ===")
+    print(f"Image: {image_path}")
+    print(f"Bounding box: [{x1}, {y1}, {x2}, {y2}]")
+    print(f"Prediction shape: {labels.shape}")
+    print(f"Unique part IDs detected: {unique_parts}")
+    print(f"\nPart breakdown:")
     for p in unique_parts:
-        print(f"  {p}: {PART_NAMES.get(p, 'Unknown')}")
+        count = np.sum(labels == p)
+        name = PART_NAMES.get(p, 'Unknown')
+        view = 'ANTERIOR' if p in ANTERIOR_PARTS else 'POSTERIOR'
+        print(f"  Part {p:2d}: {name:30s} ({view}) - {count:6d} pixels")
+    print(f"========================\n")
     
     # Extract all body parts
     all_parts = {}
