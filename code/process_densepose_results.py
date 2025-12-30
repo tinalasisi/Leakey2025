@@ -150,9 +150,12 @@ def build_texture_atlas_iuv(image_rgb, I_map, U_map, V_map, atlas_size=512):
     """
     Build UV texture atlas from IUV predictions.
     
+    Human DensePose has 24 body parts (plus background = 0).
+    We arrange them in a 5x5 grid (25 cells, 24 used).
+    
     Args:
         image_rgb: RGB image (H, W, 3)
-        I_map: Body part indices (H, W), values 0-14
+        I_map: Body part indices (H, W), values 0-24
         U_map: U coordinates (H, W), values 0-1
         V_map: V coordinates (H, W), values 0-1
         atlas_size: Size of output atlas
@@ -165,8 +168,8 @@ def build_texture_atlas_iuv(image_rgb, I_map, U_map, V_map, atlas_size=512):
         print("Cannot build texture atlas without UV coordinates")
         return None, None
     
-    # 14 body parts arranged in 4x4 grid (2 cells unused)
-    grid_size = 4
+    # 24 body parts arranged in 5x5 grid (1 cell unused)
+    grid_size = 5
     cell_size = atlas_size // grid_size
     
     atlas = np.zeros((atlas_size, atlas_size, 3), dtype=np.uint8)
@@ -179,11 +182,13 @@ def build_texture_atlas_iuv(image_rgb, I_map, U_map, V_map, atlas_size=512):
             part_id = int(I_map[y, x])
             if part_id == 0:  # Background
                 continue
+            if part_id > 24:  # Invalid
+                continue
             
             u = np.clip(float(U_map[y, x]), 0, 0.999)
             v = np.clip(float(V_map[y, x]), 0, 0.999)
             
-            # Map part_id (1-14) to grid cell (0-13)
+            # Map part_id (1-24) to grid cell (0-23)
             cell_row = (part_id - 1) // grid_size
             cell_col = (part_id - 1) % grid_size
             
@@ -272,9 +277,21 @@ def create_4panel_figure(image_path, results, output_path):
     # Create figure
     fig, axes = plt.subplots(2, 2, figsize=(14, 12))
     
-    part_names = ['BG', 'Torso', 'RHand', 'LHand', 'LFoot', 'RFoot',
-                  'RUpLeg', 'LUpLeg', 'RLoLeg', 'LLoLeg',
-                  'RUpArm', 'LUpArm', 'RLoArm', 'LLoArm', 'Head']
+    # Human DensePose 24 body parts
+    part_names = ['BG',
+        'Torso-Back', 'Torso-Front',           # 1-2
+        'Right-Hand', 'Left-Hand',              # 3-4
+        'Left-Foot', 'Right-Foot',              # 5-6
+        'Right-UpLeg-Back', 'Left-UpLeg-Back',  # 7-8
+        'Right-UpLeg-Front', 'Left-UpLeg-Front',# 9-10
+        'Right-LoLeg-Back', 'Left-LoLeg-Back',  # 11-12
+        'Right-LoLeg-Front', 'Left-LoLeg-Front',# 13-14
+        'Left-UpArm-Back', 'Right-UpArm-Back',  # 15-16
+        'Left-UpArm-Front', 'Right-UpArm-Front',# 17-18
+        'Left-LoArm-Back', 'Right-LoArm-Back',  # 19-20
+        'Left-LoArm-Front', 'Right-LoArm-Front',# 21-22
+        'Right-Head', 'Left-Head'               # 23-24
+    ]
     
     # A: Original image with bounding box
     axes[0, 0].imshow(image_rgb)
@@ -284,12 +301,15 @@ def create_4panel_figure(image_path, results, output_path):
     axes[0, 0].axis('off')
     
     # B: Body part segmentation
-    num_parts = min(int(labels.max()) + 1, 15)
-    colors = plt.cm.tab20(np.linspace(0, 1, 15))
+    num_parts = 25  # 0-24
+    colors = plt.cm.tab20(np.linspace(0, 1, 20))
+    # Extend with more colors
+    colors2 = plt.cm.tab20b(np.linspace(0, 1, 5))
+    colors = np.vstack([colors, colors2])
     colors[0] = [0, 0, 0, 1]  # Background = black
     cmap = ListedColormap(colors)
     
-    axes[0, 1].imshow(I_full, cmap=cmap, vmin=0, vmax=14)
+    axes[0, 1].imshow(I_full, cmap=cmap, vmin=0, vmax=24)
     axes[0, 1].set_title('B. Body Part Segmentation (I)', fontsize=14, fontweight='bold')
     axes[0, 1].axis('off')
     
@@ -300,15 +320,15 @@ def create_4panel_figure(image_path, results, output_path):
         if 0 < p < len(part_names):
             patches.append(mpatches.Patch(color=colors[p], label=f'{p}: {part_names[p]}'))
     if patches:
-        axes[0, 1].legend(handles=patches, loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8)
+        axes[0, 1].legend(handles=patches, loc='center left', bbox_to_anchor=(1, 0.5), fontsize=7)
     
     # C: Surface atlas
     if atlas is not None:
         axes[1, 0].imshow(atlas)
         axes[1, 0].set_title('C. Surface Atlas (UV Texture Map)', fontsize=14, fontweight='bold')
-        # Grid lines for body parts
-        cell_size = atlas.shape[0] // 4
-        for i in range(1, 4):
+        # Grid lines for body parts (5x5 grid)
+        cell_size = atlas.shape[0] // 5
+        for i in range(1, 5):
             axes[1, 0].axhline(y=i*cell_size, color='white', linewidth=0.5, alpha=0.7)
             axes[1, 0].axvline(x=i*cell_size, color='white', linewidth=0.5, alpha=0.7)
     else:
@@ -322,8 +342,8 @@ def create_4panel_figure(image_path, results, output_path):
         im = axes[1, 1].imshow(coverage, cmap='YlOrRd', vmin=0, vmax=1)
         axes[1, 1].set_title(f'D. Coverage Map ({coverage_pct:.1f}% observed)', fontsize=14, fontweight='bold')
         plt.colorbar(im, ax=axes[1, 1], fraction=0.046, pad=0.04, label='Observed')
-        cell_size = coverage.shape[0] // 4
-        for i in range(1, 4):
+        cell_size = coverage.shape[0] // 5
+        for i in range(1, 5):
             axes[1, 1].axhline(y=i*cell_size, color='gray', linewidth=0.5, alpha=0.5)
             axes[1, 1].axvline(x=i*cell_size, color='gray', linewidth=0.5, alpha=0.5)
     else:
