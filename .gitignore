@@ -9,3 +9,44 @@ analysis/*png
 analysis/*html
 analysis/*_cache
 analysis/site_libs
+
+# OpenApePose data (too large for git)
+data/OpenApePose/images/
+data/OpenApePose/*.7z.*
+# SLURM logs
+output/*.log
+output/*.err
+
+# DensePose outputs (large files)
+output/*.pkl
+output/densepose_demo/
+
+# Model weights cache
+*.pth
+*.pkl
+!data/*.pkl
+
+# Python
+__pycache__/
+*.pyc
+
+# Large data files
+data/OpenApePose/
+*.7z.*
+
+# Large data
+data/OpenApePose/
+*.7z.*
+*.pth
+
+# SLURM logs
+output/*.log
+output/*.err
+
+# DensePose outputs
+output/*.pkl
+output/densepose_demo/
+
+# Python cache
+__pycache__/
+*.pyc
