@@ -58,7 +58,8 @@ write.csv(table_2, file = "tables/model_table_5-state.csv", row.names = FALSE)
 
 best_1 <- dredge_run$all_models[[5]]
 best_2 <- dredge_run2$all_models[[33]]
-
+solution_2 <- best_2$solution
+colnames(solution_2) <- rownames(solution_2) <- levels(as.factor(traits$ontogenetic_trajectory_color))
 
 setNames(levels(as.factor(traits$ontogenetic_trajectory_color)), 1:5)
 cols_1 <- RColorBrewer::brewer.pal(4, "Set1")
